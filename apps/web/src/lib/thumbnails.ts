@@ -1,3 +1,4 @@
+import type { PDFDocumentProxy } from "pdfjs-dist";
 import { openPdf } from "./pdfjs";
 
 /** 用 pdf.js 產生頁面縮圖。 */
@@ -13,6 +14,21 @@ const THUMB_SIZE = Math.round(150 * Math.min(window.devicePixelRatio || 1, 2));
 
 export async function openThumbnails(file: File): Promise<ThumbnailDoc> {
   const { doc, task } = await openPdf(file);
+  const thumbs = createThumbnailer(doc, { releasePages: true });
+  return {
+    ...thumbs,
+    destroy() {
+      thumbs.destroy();
+      void task.destroy();
+    },
+  };
+}
+
+/**
+ * 用已開啟的文件產生縮圖（閱讀器用，不必再開一次檔案）。destroy 只釋放縮圖，不關閉文件。
+ * `releasePages`：畫完就釋放頁面資源；文件同時被閱讀器使用時不要開，以免閱讀器要重新解析頁面。
+ */
+export function createThumbnailer(doc: PDFDocumentProxy, { releasePages = false } = {}): ThumbnailDoc {
 
   const cache = new Map<number, Promise<string>>();
   const urls: string[] = [];
@@ -29,7 +45,7 @@ export async function openThumbnails(file: File): Promise<ThumbnailDoc> {
     canvas.width = Math.ceil(viewport.width);
     canvas.height = Math.ceil(viewport.height);
     await page.render({ canvas, viewport }).promise;
-    page.cleanup();
+    if (releasePages) page.cleanup();
     const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, "image/png"));
     if (!blob) throw new Error("toBlob failed");
     const url = URL.createObjectURL(blob);
@@ -51,7 +67,6 @@ export async function openThumbnails(file: File): Promise<ThumbnailDoc> {
     destroy() {
       destroyed = true;
       for (const url of urls) URL.revokeObjectURL(url);
-      void task.destroy();
     },
   };
 }

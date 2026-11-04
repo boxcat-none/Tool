@@ -19,7 +19,65 @@
 .reader__percent { min-width: 3.2em; text-align: right; }
 .reader__zoom { border: 1px solid var(--border); border-radius: 6px; padding: 4px; background: var(--surface); color: var(--text); }
 
-.reader__body { position: relative; flex: 1; min-height: 0; background: var(--surface-2); }
+.reader__main { flex: 1; min-height: 0; display: flex; position: relative; }
+.reader__body { position: relative; flex: 1; min-width: 0; min-height: 0; background: var(--surface-2); }
+.icon--on { background: var(--accent-soft); color: var(--accent); }
+
+/* ── 搜尋列 ── */
+.reader__search {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 12px; background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.reader__search-input {
+  flex: 1; max-width: 360px; min-width: 0;
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
+}
+.reader__search-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.reader__search-count { min-width: 4.5em; font-size: 13px; color: var(--text-2); white-space: nowrap; }
+
+/* ── 側邊欄 ── */
+.reader__sidebar {
+  width: 220px; flex: none; display: flex; flex-direction: column; min-height: 0;
+  background: var(--surface); border-right: 1px solid var(--border);
+}
+.reader__side-tabs { display: flex; gap: 2px; padding: 6px; border-bottom: 1px solid var(--border); }
+.side-tab {
+  flex: 1; border: 0; background: transparent; cursor: pointer;
+  padding: 5px 8px; border-radius: 6px; color: var(--text-2); font-weight: 600; font-size: 13px;
+}
+.side-tab--active { background: var(--surface-2); color: var(--text); }
+.side-thumbs { flex: 1; overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+.side-thumb {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  border: 2px solid transparent; border-radius: 8px; padding: 6px; background: transparent; cursor: pointer;
+}
+.side-thumb:hover { background: var(--surface-2); }
+.side-thumb--active { border-color: var(--accent); background: var(--accent-soft); }
+.side-thumb__frame { width: 100%; aspect-ratio: 1; display: grid; place-items: center; }
+.side-thumb__frame img { max-width: 100%; max-height: 100%; background: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / 0.2); }
+.side-thumb__num { font-size: 12px; color: var(--text-2); }
+.side-outline { flex: 1; overflow: auto; padding: 8px 6px; }
+.side-outline .note { padding: 8px; }
+.outline { list-style: none; margin: 0; padding: 0; }
+.outline__row { display: flex; align-items: flex-start; }
+.outline__toggle {
+  flex: none; width: 20px; height: 26px; border: 0; background: transparent; cursor: pointer;
+  color: var(--text-2); font-size: 11px; display: grid; place-items: center;
+}
+.outline__title {
+  flex: 1; min-width: 0; text-align: left; border: 0; background: transparent; cursor: pointer;
+  padding: 4px 6px; border-radius: 6px; font-size: 14px; line-height: 1.4;
+}
+.outline__title:hover { background: var(--surface-2); }
+
+/* ── 提示、密碼 ── */
+.reader__toast {
+  position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%);
+  padding: 8px 14px; border-radius: 999px; font-size: 14px; white-space: nowrap;
+  background: var(--text); color: var(--bg); box-shadow: 0 4px 16px rgb(0 0 0 / 0.2);
+}
+.reader__toast .link { color: inherit; text-decoration: underline; font-size: 14px; }
+.reader__password { width: min(360px, calc(100% - 32px)); display: flex; flex-direction: column; gap: 10px; }
 /* pdf.js 的閱讀器要求捲動容器是 absolute 定位 */
 .reader__scroll { position: absolute; inset: 0; overflow: auto; }
 .reader__scroll .pdfViewer { padding: 12px 0 40px; }
@@ -35,7 +93,17 @@
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px;
 }
 
+/* 窄螢幕：側邊欄蓋在內容上，選好頁面後自動收起 */
+@media (max-width: 720px) {
+  .reader__sidebar { position: absolute; z-index: 5; top: 0; bottom: 0; left: 0; width: min(280px, 80%); box-shadow: 4px 0 20px rgb(0 0 0 / 0.2); }
+}
+
 @media (max-width: 520px) {
   .reader__title { max-width: 30vw; }
   .reader__zoom { display: none; }
 }
+
+.icon__svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; vertical-align: middle; }
+/* 疊加層裡的提示框維持正常文字顏色（疊加層本身是灰色的「開啟中…」） */
+.reader__overlay .notice { color: var(--text); }
+.reader__overlay .notice .note--error { color: var(--danger); }
