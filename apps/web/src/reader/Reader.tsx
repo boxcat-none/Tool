@@ -6,7 +6,32 @@ import { isPdf } from "../lib/format";
 import { loadPdfViewer, openPdf, type OpenedPdf } from "../lib/pdfjs";
 import { loadPosition, loadPref, savePosition, savePref } from "../lib/readingPosition";
 import { createThumbnailer, type ThumbnailDoc } from "../lib/thumbnails";
+import { platform } from "../lib/platform";
+import { MemoryBlobStore, type BlobStore } from "@tool/notes/blobs";
+import { Notebook } from "@tool/notes/notebook";
+import { InkController, type InkSettings } from "./ink";
+import { HIGHLIGHTER_COLORS, HIGHLIGHTER_SIZES, InkToolbar, PEN_COLORS, PEN_SIZES } from "./InkToolbar";
 import "./reader.css";
+
+/** 本機修改的標記：復原只會復原這個來源的動作 */
+const LOCAL = "this-device";
+
+function loadInkSettings(): InkSettings {
+  const num = (key: string, fallback: number, allowed: number[]) => {
+    const v = Number(loadPref<string>(key, String(fallback)));
+    return allowed.includes(v) ? v : fallback;
+  };
+  return {
+    tool: "read", // 一開啟都是閱讀模式，避免誤畫
+    penColor: loadPref<string>("penColor", PEN_COLORS[1]),
+    penSize: num("penSize", PEN_SIZES[1], PEN_SIZES),
+    highlighterColor: loadPref<string>("highlighterColor", HIGHLIGHTER_COLORS[0]),
+    highlighterSize: num("highlighterSize", HIGHLIGHTER_SIZES[1], HIGHLIGHTER_SIZES),
+    penOnly: loadPref<string>("penOnly", "false") === "true",
+  };
+}
+
+type UndoManager = ReturnType<Notebook["createUndoManager"]>;
 
 /** 閱讀器（之後的筆記功能會加在這裡）。整個模組延遲載入，不影響工具頁的速度。 */
 export default function Reader() {
@@ -95,6 +120,18 @@ function ReaderDocument({ file, onClose }: { file: File; onClose: () => void }) 
   const [thumbs, setThumbs] = useState<ThumbnailDoc | null>(null);
   const [outline, setOutline] = useState<OutlineNode[] | null>(null);
   const [resumed, setResumed] = useState<number | null>(null);
+
+  // 手寫
+  const [ink, setInk] = useState<InkSettings>(loadInkSettings);
+  const inkRef = useRef(ink);
+  inkRef.current = ink;
+  const inkCtl = useRef<InkController | null>(null);
+  const undoRef = useRef<UndoManager | null>(null);
+  const notes = useRef<{ nb: Notebook; blobs: BlobStore } | null>(null);
+  const [history, setHistory] = useState({ undo: false, redo: false });
+  const [dirty, setDirty] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [toast, setToast] = useState<{ text: string; error?: boolean } | null>(null);
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -211,7 +248,18 @@ function ReaderDocument({ file, onClose }: { file: File; onClose: () => void }) 
       };
 
       let thumbnailer: ThumbnailDoc | undefined;
+      let ctl: InkController | undefined;
+      let undo: UndoManager | undefined;
+      let offDirty: (() => void) | undefined;
+      // 頁面畫好（包含縮放後重畫）就掛上手寫層
+      eventBus.on("pagerendered", (e: { source: Parameters<InkController["attach"]>[0] }) => ctl?.attach(e.source));
       cleanup = () => {
+        offDirty?.();
+        ctl?.destroy();
+        undo?.destroy();
+        inkCtl.current = null;
+        undoRef.current = null;
+        notes.current = null;
         window.clearTimeout(saveTimer);
         ro.disconnect();
         container.removeEventListener("click", onLinkClick, true);
@@ -224,6 +272,36 @@ function ReaderDocument({ file, onClose }: { file: File; onClose: () => void }) 
       opened = await openPdf(file, password);
       if (disposed) return void opened.task.destroy();
       fingerprint = opened.doc.fingerprints[0] ?? null;
+
+      // 建立筆記本：每一頁 PDF 對應一個筆記頁（之後插入的白紙、格線頁也放在這裡）
+      const nb = Notebook.create(file.name);
+      const blobs = new MemoryBlobStore();
+      const fileId = await blobs.put(new Uint8Array(await file.arrayBuffer()));
+      nb.addFile({ id: fileId, name: file.name, mime: "application/pdf", size: file.size });
+      const pdfPages = await Promise.all(
+        Array.from({ length: opened.doc.numPages }, (_, i) => opened!.doc.getPage(i + 1)),
+      );
+      nb.insertPages(
+        0,
+        pdfPages.map((p, index) => ({
+          source: { kind: "pdf" as const, fileId, index },
+          width: p.view[2] - p.view[0],
+          height: p.view[3] - p.view[1],
+          rotation: (((p.rotate % 360) + 360) % 360) as 0 | 90 | 180 | 270,
+        })),
+      );
+      if (disposed) return void opened.task.destroy();
+      const pageIds = nb.pageIds;
+      notes.current = { nb, blobs };
+      ctl = new InkController(nb, (i) => pageIds[i], () => inkRef.current, LOCAL);
+      inkCtl.current = ctl;
+      undo = nb.createUndoManager(LOCAL);
+      undoRef.current = undo;
+      const syncHistory = () => setHistory({ undo: undo!.undoStack.length > 0, redo: undo!.redoStack.length > 0 });
+      undo.on("stack-item-added", syncHistory);
+      undo.on("stack-item-popped", syncHistory);
+      offDirty = nb.onChange(({ local }) => local && setDirty(true));
+
       viewer.setDocument(opened.doc);
       linkService.setDocument(opened.doc);
       findController.setDocument(opened.doc);
@@ -252,6 +330,57 @@ function ReaderDocument({ file, onClose }: { file: File; onClose: () => void }) 
       void opened?.task.destroy();
     };
   }, [file, password]);
+
+  useEffect(() => {
+    inkCtl.current?.refreshTool();
+    savePref("penColor", ink.penColor);
+    savePref("penSize", String(ink.penSize));
+    savePref("highlighterColor", ink.highlighterColor);
+    savePref("highlighterSize", String(ink.highlighterSize));
+    savePref("penOnly", String(ink.penOnly));
+  }, [ink]);
+
+  // 有還沒匯出的筆記時，關閉分頁前提醒
+  useEffect(() => {
+    if (!dirty) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [dirty]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = window.setTimeout(() => setToast(null), toast.error ? 8000 : 5000);
+    return () => window.clearTimeout(t);
+  }, [toast]);
+
+  const close = () => {
+    if (dirty && !window.confirm("筆記還沒有匯出，關閉後會遺失。確定要關閉嗎？")) return;
+    onClose();
+  };
+
+  const exportNotes = async () => {
+    const n = notes.current;
+    if (!n) return;
+    setExporting(true);
+    try {
+      // 匯出才載入 pdf-lib（約 400 KB），平常閱讀、書寫不需要
+      const { exportPdf } = await import("@tool/notes");
+      const data = await exportPdf(n.nb, n.blobs, { ink: "flatten" });
+      const saved = await platform.saveFile({ name: `${file.name.replace(/\.pdf$/i, "")}_筆記.pdf`, data });
+      if (saved) {
+        setDirty(false);
+        setToast({ text: `${saved}。` });
+      }
+    } catch (e) {
+      setToast({ text: `匯出失敗：${(e as Error).message}`, error: true });
+    } finally {
+      setExporting(false);
+    }
+  };
 
   // 目前頁的縮圖保持在側邊欄看得到的位置
   useEffect(() => {
@@ -317,6 +446,15 @@ function ReaderDocument({ file, onClose }: { file: File; onClose: () => void }) 
       } else if (mod && e.key === "0") {
         e.preventDefault();
         api.current?.setScale("page-width");
+      } else if (!typing && mod && (e.key === "z" || e.key === "Z") && !e.shiftKey) {
+        e.preventDefault();
+        undoRef.current?.undo();
+      } else if (!typing && mod && (((e.key === "z" || e.key === "Z") && e.shiftKey) || e.key === "y" || e.key === "Y")) {
+        e.preventDefault();
+        undoRef.current?.redo();
+      } else if (!typing && !mod && !e.altKey && ["v", "p", "h", "e"].includes(e.key.toLowerCase())) {
+        const tools = { v: "read", p: "pen", h: "highlighter", e: "eraser" } as const;
+        setInk((s) => ({ ...s, tool: tools[e.key.toLowerCase() as keyof typeof tools] }));
       } else if (!typing && !mod && e.key === "ArrowRight") {
         api.current?.goToPage(page + 1);
       } else if (!typing && !mod && e.key === "ArrowLeft") {
@@ -343,7 +481,7 @@ function ReaderDocument({ file, onClose }: { file: File; onClose: () => void }) 
   return (
     <div className="reader">
       <div className="reader__toolbar" role="toolbar" aria-label="閱讀器工具列">
-        <button type="button" className="icon" aria-label="關閉檔案" onClick={onClose}>✕</button>
+        <button type="button" className="icon" aria-label="關閉檔案" onClick={close}>✕</button>
         {ready && (
           <button
             type="button"
@@ -394,6 +532,20 @@ function ReaderDocument({ file, onClose }: { file: File; onClose: () => void }) 
           </>
         )}
       </div>
+
+      {ready && (
+        <InkToolbar
+          settings={ink}
+          onChange={(patch) => setInk((s) => ({ ...s, ...patch }))}
+          canUndo={history.undo}
+          canRedo={history.redo}
+          onUndo={() => undoRef.current?.undo()}
+          onRedo={() => undoRef.current?.redo()}
+          onExport={() => void exportNotes()}
+          exportBlocked={password !== undefined ? "有密碼保護的 PDF 暫時無法匯出筆記" : undefined}
+          exporting={exporting}
+        />
+      )}
 
       {ready && searchOpen && (
         <div className="reader__search" role="search">
@@ -485,7 +637,12 @@ function ReaderDocument({ file, onClose }: { file: File; onClose: () => void }) 
           <div ref={scrollRef} className="reader__scroll">
             <div ref={innerRef} className="pdfViewer" />
           </div>
-          {resumed !== null && (
+          {toast && (
+            <div className={`reader__toast${toast.error ? " reader__toast--error" : ""}`} role={toast.error ? "alert" : "status"}>
+              {toast.text}
+            </div>
+          )}
+          {resumed !== null && !toast && (
             <div className="reader__toast" role="status">
               從上次讀到的第 {resumed} 頁繼續 ·{" "}
               <button type="button" className="link" onClick={() => (api.current?.goToPage(1), setResumed(null))}>回到第 1 頁</button>

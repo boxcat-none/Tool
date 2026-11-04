@@ -9,7 +9,8 @@
     "./pageRange": "./src/pageRange.ts",
     "./rotation": "./src/rotation.ts",
     "./raster": "./src/raster.ts",
-    "./ink": "./src/ink/index.ts"
+    "./ink": "./src/ink/index.ts",
+    "./ink/core": "./src/ink/core.ts"
   },
   "scripts": {
     "test": "vitest run",
