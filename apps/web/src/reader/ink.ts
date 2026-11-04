@@ -1,5 +1,6 @@
 import { strokeOutline, type Stroke } from "@tool/core/ink/core";
 import type { Notebook } from "@tool/notes/notebook";
+import { MAX_INK_CANVAS_PIXELS } from "../lib/device";
 
 /**
  * 閱讀器上的手寫層。
@@ -51,7 +52,8 @@ interface PageLayers {
 const HIGHLIGHTER_ALPHA = 0.35;
 /** 橡皮擦半徑（螢幕 px） */
 const ERASER_RADIUS = 10;
-const MAX_CANVAS_PIXELS = 16_000_000;
+/** 手寫層 canvas 的安全上限（正常情況下由 sweep 跟著 pdf.js 釋放，用不到這個上限） */
+const MAX_LAYERS = 40;
 
 export class InkController {
   private layers = new Map<number, PageLayers>();
@@ -61,7 +63,17 @@ export class InkController {
   private pageCache = new Map<string, { id: string; stroke: Stroke }[]>();
   /** 橡皮擦拖曳中，暫時隱藏（放開時才真正刪除，整次拖曳是一個復原步驟） */
   private erasing = new Set<string>();
-  private active: { index: number; pointerId: number; pointerType: string; l: PageLayers; stroke?: Stroke; frame?: number } | null = null;
+  private active: {
+    index: number;
+    pointerId: number;
+    pointerType: string;
+    l: PageLayers;
+    stroke?: Stroke;
+    /** 瀏覽器預測的下一段軌跡：只畫在畫面上降低延遲感，不會存進筆記 */
+    predicted?: Stroke["points"];
+    frame?: number;
+  } | null = null;
+  private penSeen = false;
   private offChange: () => void;
 
   constructor(
@@ -69,6 +81,8 @@ export class InkController {
     private pageIdAt: (index: number) => string | undefined,
     private settings: () => InkSettings,
     private origin: unknown,
+    /** 第一次偵測到觸控筆（用來自動開啟「只用觸控筆」） */
+    private onPenDetected?: () => void,
   ) {
     this.offChange = nb.onChange(() => {
       this.pageCache.clear();
@@ -90,9 +104,12 @@ export class InkController {
     const index = view.id - 1;
     let l = this.layers.get(index);
     if (!l || l.view !== view) {
+      if (l) this.release(l);
       l = this.createLayers(view);
-      this.layers.set(index, l);
     }
+    this.layers.delete(index);
+    this.layers.set(index, l); // 移到最後 = 最近使用
+    this.sweep(index);
     const canvasWrapper = view.div.querySelector(".canvasWrapper");
     if (!l.root.isConnected) {
       if (canvasWrapper) canvasWrapper.after(l.root);
@@ -104,12 +121,30 @@ export class InkController {
     this.redraw(index);
   }
 
+  /**
+   * 釋放不需要的手寫層：pdf.js 清掉離畫面太遠的頁面時，會一併移除我們的元素（不在 DOM 上了），
+   * 這些頁面的 canvas 就可以釋放；記憶體因此跟著 pdf.js 自己的頁面緩衝。另外保留安全上限。
+   */
+  private sweep(keep: number) {
+    for (const [i, l] of this.layers) {
+      if (i === keep || this.active?.index === i) continue;
+      if (!l.root.isConnected || this.layers.size > MAX_LAYERS) {
+        this.release(l);
+        this.layers.delete(i);
+      }
+    }
+  }
+
+  /** 移除頁面元素並釋放 canvas 記憶體（iOS Safari 要把尺寸設為 0 才會真正釋放） */
+  private release(l: PageLayers) {
+    l.root.remove();
+    l.input.remove();
+    for (const c of [l.highlight, l.pen, l.live]) c.width = c.height = 0;
+  }
+
   /** 顯示用的 PDF 換了（插頁、刪頁等），舊的頁面元素都作廢 */
   reset() {
-    for (const l of this.layers.values()) {
-      l.root.remove();
-      l.input.remove();
-    }
+    for (const l of this.layers.values()) this.release(l);
     this.layers.clear();
     this.pageCache.clear();
   }
@@ -136,6 +171,8 @@ export class InkController {
     input.className = "ink-input";
     const live = document.createElement("canvas");
     live.className = "ink-input__live";
+    // 低延遲模式：正在畫的線不必等整個畫面合成（支援的瀏覽器才有效）
+    live.getContext("2d", { desynchronized: true });
     input.append(live);
 
     const l: PageLayers = { view, root, highlight, pen, input, live, dpr: 1 };
@@ -162,7 +199,7 @@ export class InkController {
   private resize(l: PageLayers) {
     const { width, height } = l.view.viewport;
     let dpr = window.devicePixelRatio || 1;
-    if (width * height * dpr * dpr > MAX_CANVAS_PIXELS) dpr = Math.sqrt(MAX_CANVAS_PIXELS / (width * height));
+    if (width * height * dpr * dpr > MAX_INK_CANVAS_PIXELS) dpr = Math.sqrt(MAX_INK_CANVAS_PIXELS / (width * height));
     l.dpr = dpr;
     for (const c of [l.highlight, l.pen, l.live]) {
       const w = Math.max(1, Math.round(width * dpr));
@@ -267,6 +304,10 @@ export class InkController {
     if (e.button !== 0 && e.pointerType === "mouse") return;
     e.preventDefault();
     l.input.setPointerCapture(e.pointerId);
+    if (e.pointerType === "pen" && !this.penSeen) {
+      this.penSeen = true;
+      this.onPenDetected?.();
+    }
     const index = l.view.id - 1;
     this.active = { index, pointerId: e.pointerId, pointerType: e.pointerType, l };
     if (s.tool === "eraser") {
@@ -303,6 +344,9 @@ export class InkController {
     const stroke = this.active.stroke;
     if (!stroke) return;
     for (const ev of samples) stroke.points.push(this.toPdf(l, ev));
+    // 預測點：觸控筆移動時先把線畫到「接下來會到的位置」，看起來更跟手
+    const predicted = typeof e.getPredictedEvents === "function" ? e.getPredictedEvents() : [];
+    this.active.predicted = predicted.map((ev) => this.toPdf(l, ev));
     this.scheduleLive(l);
   }
 
@@ -338,7 +382,8 @@ export class InkController {
       l.live.classList.toggle("ink-input__live--highlighter", highlighter);
       ctx.globalAlpha = highlighter ? HIGHLIGHTER_ALPHA : 1;
       ctx.fillStyle = stroke.color;
-      ctx.fill(outlinePath(stroke));
+      const predicted = this.active.predicted ?? [];
+      ctx.fill(outlinePath(predicted.length ? { ...stroke, points: [...stroke.points, ...predicted] } : stroke));
     });
   }
 
