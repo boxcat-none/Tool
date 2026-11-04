@@ -1,5 +1,6 @@
 import { normalizeRotation, type Rotation } from "@tool/core/rotation";
 import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { PageThumb } from "../components/PageThumb";
 import { FileDrop } from "../components/FileDrop";
 import { moveItem } from "../components/SortableFileList";
 import { Status, type StatusState } from "../components/Status";
@@ -204,7 +205,7 @@ export function OrganizeTool() {
                   aria-label={`第 ${p.index + 1} 頁${p.deleted ? "（已刪除）" : ""}`}
                   onClick={(e) => toggleSelect(p.key, e)}
                 >
-                  <Thumb doc={thumbs} index={p.index} spin={p.spin} />
+                  <PageThumb doc={thumbs} index={p.index} spin={p.spin} className="page__frame" />
                   {p.deleted && <span className="page__badge">已刪除</span>}
                   <span className="page__check" aria-hidden="true">✓</span>
                 </button>
@@ -253,40 +254,5 @@ export function OrganizeTool() {
 
       <Status state={status} />
     </section>
-  );
-}
-
-/** 頁面縮圖：捲動到附近才開始畫，大文件也不會一次畫完所有頁面。 */
-function Thumb({ doc, index, spin }: { doc: ThumbnailDoc; index: number; spin: number }) {
-  const ref = useRef<HTMLSpanElement>(null);
-  const [url, setUrl] = useState<string>();
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    let cancelled = false;
-    const io = new IntersectionObserver(
-      (entries) => {
-        if (!entries.some((e) => e.isIntersecting)) return;
-        io.disconnect();
-        doc.get(index).then((u) => !cancelled && setUrl(u)).catch(() => undefined);
-      },
-      { rootMargin: "300px" },
-    );
-    io.observe(el);
-    return () => {
-      cancelled = true;
-      io.disconnect();
-    };
-  }, [doc, index]);
-
-  return (
-    <span ref={ref} className="page__frame">
-      {url ? (
-        <img src={url} alt="" draggable={false} style={{ transform: `rotate(${spin}deg)` }} />
-      ) : (
-        <span className="spinner" aria-hidden="true" />
-      )}
-    </span>
   );
 }
