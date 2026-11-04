@@ -61,7 +61,7 @@ export class InkController {
   private pageCache = new Map<string, { id: string; stroke: Stroke }[]>();
   /** 橡皮擦拖曳中，暫時隱藏（放開時才真正刪除，整次拖曳是一個復原步驟） */
   private erasing = new Set<string>();
-  private active: { index: number; pointerId: number; stroke?: Stroke; frame?: number } | null = null;
+  private active: { index: number; pointerId: number; pointerType: string; l: PageLayers; stroke?: Stroke; frame?: number } | null = null;
   private offChange: () => void;
 
   constructor(
@@ -143,6 +143,16 @@ export class InkController {
     input.addEventListener("pointermove", (e) => this.onMove(l, e));
     input.addEventListener("pointerup", (e) => this.onUp(l, e));
     input.addEventListener("pointercancel", (e) => this.onUp(l, e));
+    // Apple Pencil：在第一個觸控事件就取消瀏覽器的預設行為，
+    // 否則 Safari 會把筆的拖曳當成「長按選取文字」或捲動頁面
+    const stopStylus = (e: TouchEvent) => {
+      if (this.settings().tool === "read") return;
+      if (Array.from(e.changedTouches).some((t) => (t as Touch & { touchType?: string }).touchType === "stylus")) {
+        e.preventDefault();
+      }
+    };
+    input.addEventListener("touchstart", stopStylus, { passive: false });
+    input.addEventListener("touchmove", stopStylus, { passive: false });
     input.addEventListener("pointerleave", () => {
       if (!this.active) this.clearLive(l);
     });
@@ -167,6 +177,8 @@ export class InkController {
     l.input.dataset.tool = tool;
     // 閱讀模式：輸入層不攔截滑鼠，才能選取文字、點連結
     l.input.style.pointerEvents = tool === "read" ? "none" : "auto";
+    // 「只用觸控筆」：手指交給瀏覽器捲動（兩指縮放由 gestures.ts 處理）；否則手指也用來書寫
+    l.input.style.touchAction = this.settings().penOnly ? "pan-x pan-y" : "none";
     if (tool === "read") this.clearLive(l);
   }
 
@@ -230,15 +242,33 @@ export class InkController {
     return [x, y, pressure];
   }
 
+  /** 正在用手指畫的那一筆作廢（例如變成兩指縮放） */
+  cancelTouchStroke() {
+    const a = this.active;
+    if (!a || a.pointerType !== "touch") return;
+    if (a.frame) cancelAnimationFrame(a.frame);
+    this.active = null;
+    if (this.erasing.size) {
+      this.erasing.clear();
+      this.redraw(a.index);
+    }
+    this.clearLive(a.l);
+  }
+
   private onDown(l: PageLayers, e: PointerEvent) {
     const s = this.settings();
-    if (s.tool === "read" || this.active) return;
+    if (s.tool === "read") return;
     if (s.penOnly && e.pointerType === "touch") return;
+    if (this.active) {
+      // 第二根手指放下：這是縮放手勢，不是書寫
+      if (e.pointerType === "touch" && this.active.pointerType === "touch") this.cancelTouchStroke();
+      return;
+    }
     if (e.button !== 0 && e.pointerType === "mouse") return;
     e.preventDefault();
     l.input.setPointerCapture(e.pointerId);
     const index = l.view.id - 1;
-    this.active = { index, pointerId: e.pointerId };
+    this.active = { index, pointerId: e.pointerId, pointerType: e.pointerType, l };
     if (s.tool === "eraser") {
       this.eraseAt(l, this.toPdf(l, e));
       this.drawEraserCursor(l, e);
