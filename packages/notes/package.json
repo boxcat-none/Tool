@@ -19,7 +19,7 @@
     "fractional-indexing": "4.0.0",
     "yjs": "13.6.33",
     "fflate": "0.8.3",
-    "pdf-lib": "1.17.1"
+    "pdf-lib": "npm:@cantoo/pdf-lib@2.11.1"
   },
   "devDependencies": {
     "@types/node": "^22",

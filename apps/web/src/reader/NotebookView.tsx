@@ -4,7 +4,7 @@ import * as Y from "yjs";
 import { PageThumb } from "../components/PageThumb";
 import * as desktop from "../lib/desktop";
 import type { Library, NotebookMeta } from "../lib/library";
-import { notebookPdf } from "../lib/pdf";
+import { notebookPdf, WRONG_PASSWORD } from "../lib/pdf";
 import { loadPdfViewer, openPdf, type OpenedPdf } from "../lib/pdfjs";
 import { platform } from "../lib/platform";
 import { loadPosition, loadPref, savePosition, savePref } from "../lib/readingPosition";
@@ -135,6 +135,9 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
   const focusNext = useRef<string | null>(null);
 
   const [password, setPassword] = useState<string | undefined>(initialPassword);
+  /** rebuild 是非同步的，用 ref 取得最新的密碼 */
+  const passwordRef = useRef<string | undefined>(initialPassword);
+  const nbRef = useRef<Notebook | null>(null);
   const [status, setStatus] = useState<Status>({ kind: "loading" });
   const [page, setPage] = useState(1);
   const [pageInput, setPageInput] = useState("1");
@@ -323,6 +326,7 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
       });
 
       setNb(notebook);
+      nbRef.current = notebook;
       await rebuild(notebook, true);
       cleanup = () => {
         window.clearTimeout(metaTimer);
@@ -363,10 +367,17 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
         if (!blob) throw new Error("找不到原始檔案。");
         bytes = blob;
       } else {
+        // 用到有密碼的原始檔：要先有密碼才能在 Worker 裡解密、重新產生
+        const locked = encryptedFileIds(notebook);
+        if (locked.length && !passwordRef.current) {
+          setStatus({ kind: "password", wrong: false });
+          return;
+        }
         bytes = await notebookPdf(
           Y.encodeStateAsUpdate(notebook.doc),
           { ids: notebook.usedFileIds, get: (id) => library.blobs.get(id) },
           "none",
+          passwordsFor(notebook),
         );
       }
       setDisplay({
@@ -376,11 +387,32 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
         focusPageId: first ? undefined : focusPageId && pageIds.includes(focusPageId) ? focusPageId : undefined,
       });
     } catch (e) {
-      setToast({ text: (e as Error).message || "無法更新頁面。", error: true });
+      if ((e as Error).message === WRONG_PASSWORD) {
+        passwordRef.current = undefined;
+        setStatus({ kind: "password", wrong: true });
+      } else {
+        setToast({ text: (e as Error).message || "無法更新頁面。", error: true });
+      }
     } finally {
       setRebuilding(false);
     }
   }
+
+  /** 有密碼的原始檔都用使用者輸入的密碼（密碼只放在記憶體，不會儲存） */
+  function passwordsFor(notebook: Notebook): Record<string, string> | undefined {
+    const pw = passwordRef.current;
+    if (!pw) return undefined;
+    return Object.fromEntries(encryptedFileIds(notebook).map((id) => [id, pw]));
+  }
+
+  const submitPassword = (pw: string) => {
+    passwordRef.current = pw;
+    setStatus({ kind: "loading" });
+    setPassword(pw);
+    // 顯示的是重新產生的 PDF（不是原檔）時，要用密碼重新產生一次
+    const notebook = nbRef.current;
+    if (notebook && !plainSource(notebook)) void rebuild(notebook, !displayRef.current);
+  };
 
   // ── 3. 顯示用 PDF 換了 → 載入到閱讀器 ──────────────────────
   useEffect(() => {
@@ -528,7 +560,7 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
     if (narrow()) setSidebar(null);
   };
 
-  const structureBlocked = encrypted ? "有密碼保護的 PDF 暫時無法插入、刪除或移動頁面" : undefined;
+  const structureBlocked = encrypted && !password ? "請先輸入 PDF 的開啟密碼" : undefined;
 
   const currentPageId = () => display?.pageIds[page - 1];
 
@@ -585,9 +617,10 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
         Y.encodeStateAsUpdate(nb.doc),
         { ids: nb.usedFileIds, get: (id) => library.blobs.get(id) },
         "flatten",
+        passwordsFor(nb),
       );
       const saved = await platform.saveFile({ name: `${safeName(title)}.pdf`, data });
-      if (saved) setToast({ text: `${saved}。` });
+      if (saved) setToast({ text: `${saved}。${encrypted ? "注意：匯出的 PDF 沒有密碼保護。" : ""}` });
     } catch (e) {
       setToast({ text: `匯出失敗：${(e as Error).message}`, error: true });
     } finally {
@@ -767,7 +800,7 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
           onRedo={() => undoRef.current?.redo()}
           onExport={() => void exportNotes()}
           onSave={() => void saveNotebook()}
-          exportBlocked={encrypted ? "有密碼保護的 PDF 暫時無法匯出筆記" : undefined}
+          exportBlocked={encrypted && !password ? "請先輸入 PDF 的開啟密碼" : undefined}
           exporting={exporting}
         />
       )}
@@ -883,7 +916,7 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
           {status.kind === "loading" && <div className="reader__overlay"><span className="spinner" aria-hidden="true" /> 開啟中…</div>}
           {status.kind === "password" && (
             <div className="reader__overlay">
-              <PasswordForm wrong={status.wrong} onSubmit={setPassword} onCancel={onClose} />
+              <PasswordForm wrong={status.wrong} onSubmit={submitPassword} onCancel={onClose} />
             </div>
           )}
           {status.kind === "error" && (
@@ -944,4 +977,8 @@ function openExternal(url: string) {
 /** 檔名不能有的字元換掉 */
 function safeName(name: string): string {
   return (name.trim() || "筆記").replace(/[\\/:*?"<>|]/g, "_");
+}
+
+function encryptedFileIds(nb: Notebook): string[] {
+  return nb.usedFileIds.filter((id) => nb.getFile(id)?.encrypted);
 }

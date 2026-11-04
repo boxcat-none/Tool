@@ -46,11 +46,13 @@ export interface ExportOptions {
   pageIds?: string[];
   /** 是否保留原始 PDF 的目錄（書籤），目標頁對應到新頁碼。預設 true */
   outline?: boolean;
+  /** 有密碼的原始檔：檔案代號 → 開啟密碼（只在記憶體中使用，不會儲存） */
+  passwords?: Record<string, string>;
 }
 
 /** 把筆記本匯出成 PDF */
 export async function exportPdf(nb: Notebook, blobs: BlobStore, options: ExportOptions = {}): Promise<Uint8Array> {
-  const { ink = "flatten", outline = true } = options;
+  const { ink = "flatten", outline = true, passwords = {} } = options;
   const ids = options.pageIds ?? nb.pageIds;
   const out = await PDFDocument.create();
   const painter = new PaperPainter(out);
@@ -73,7 +75,15 @@ export async function exportPdf(nb: Notebook, blobs: BlobStore, options: ExportO
   for (const [fileId, indices] of wanted) {
     const bytes = await blobs.get(fileId);
     if (!bytes) throw new Error(`找不到原始檔案「${nb.getFile(fileId)?.name ?? fileId}」。`);
-    const src = await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false });
+    const password = passwords[fileId];
+    // 有密碼：用密碼解密後複製頁面（輸出的 PDF 不再有密碼保護）
+    const src = password
+      ? await PDFDocument.load(bytes, { password, updateMetadata: false })
+      : await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false });
+    // 沒給密碼就複製加密的內容，會靜靜產生一份打不開的 PDF，所以直接報錯
+    if (!password && src.isEncrypted) {
+      throw new Error(`「${nb.getFile(fileId)?.name ?? fileId}」有密碼保護，需要密碼才能產生 PDF。`);
+    }
     const pages = await out.copyPages(src, indices);
     const byIndex = new Map<number, PDFPage[]>();
     indices.forEach((index, i) => {
