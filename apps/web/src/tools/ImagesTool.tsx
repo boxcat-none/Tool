@@ -101,7 +101,7 @@ export function ImagesTool() {
         compact={items.length > 0}
         onFiles={addFiles}
         title={items.length ? "加入更多圖片" : "拖放圖片到這裡，或點擊選擇檔案"}
-        hint={items.length ? undefined : "支援 JPG、PNG、WebP、GIF 等格式，每張圖片一頁"}
+        hint={items.length ? undefined : "支援 JPG、PNG，以及 WebP、GIF 等格式，每張圖片一頁"}
       />
 
       {items.length > 0 && (

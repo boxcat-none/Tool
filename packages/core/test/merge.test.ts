@@ -1,3 +1,4 @@
+import { PDFDocument } from "pdf-lib";
 import { describe, expect, it } from "vitest";
 import { mergePdfs, PdfToolError } from "../src";
 import { makeEncryptedLookingPdf, makePdf, readMarkers } from "./helpers";
@@ -29,6 +30,19 @@ describe("mergePdfs", () => {
     expect(err).toBeInstanceOf(PdfToolError);
     expect(err.code).toBe("INVALID_PDF");
     expect(err.message).toContain("壞掉.pdf");
+  });
+
+  it("只有標頭、內容殘缺的檔案也回報 INVALID_PDF", async () => {
+    const bad = new TextEncoder().encode("%PDF-1.4 garbage");
+    await expect(mergePdfs([{ data: bad, name: "殘缺.pdf" }])).rejects.toMatchObject({
+      code: "INVALID_PDF",
+    });
+  });
+
+  it("沒有頁面的 PDF 回報 INVALID_PDF", async () => {
+    // pdf-lib 預設會幫空文件補一頁，要關掉
+    const empty = await (await PDFDocument.create()).save({ addDefaultPage: false });
+    await expect(mergePdfs([{ data: empty, name: "空.pdf" }])).rejects.toThrow("沒有任何頁面");
   });
 
   it("加密檔案時丟出 ENCRYPTED", async () => {

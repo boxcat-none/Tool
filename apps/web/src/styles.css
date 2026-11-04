@@ -226,7 +226,7 @@ button, input { font: inherit; color: inherit; }
 
 /* ── Options（圖片轉 PDF） ───────────────── */
 .options { display: flex; flex-wrap: wrap; gap: 16px; }
-.field--auto { flex: none; }
+.field.field--auto { flex: none; }
 .seg {
   display: inline-flex; padding: 3px; gap: 2px;
   background: var(--surface-2); border-radius: 8px;
@@ -320,5 +320,7 @@ button, input { font: inherit; color: inherit; }
   .file__grip { display: none; }
   .pages { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tabs { display: grid; grid-template-columns: repeat(2, 1fr); width: 100%; }
+  .tab { padding: 7px 8px; }
+  .tab:last-child:nth-child(odd) { grid-column: span 2; }
   .actions .primary { width: 100%; }
 }

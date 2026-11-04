@@ -30,17 +30,28 @@ function download(name: string, blob: Blob) {
 
 const webPlatform: Platform = {
   async saveFile({ name, data }) {
-    download(name, new Blob([data as BlobPart], { type: "application/pdf" }));
+    download(name, new Blob([data as BlobPart], { type: mimeType(name) }));
   },
   async saveFiles(files, zipName) {
     if (files.length === 1) return this.saveFile(files[0]);
     const entries: Record<string, Uint8Array> = {};
     for (const f of files) entries[uniqueName(f.name, entries)] = f.data;
-    // PDF 本身已經壓縮過，ZIP 只打包不再壓縮，速度快很多
+    // PDF、PNG、JPG 本身都已經壓縮過，ZIP 只打包不再壓縮，速度快很多
     const zipped = zipSync(entries, { level: 0 });
     download(zipName, new Blob([zipped as BlobPart], { type: "application/zip" }));
   },
 };
+
+const MIME: Record<string, string> = {
+  pdf: "application/pdf",
+  png: "image/png",
+  jpg: "image/jpeg",
+  zip: "application/zip",
+};
+
+function mimeType(name: string): string {
+  return MIME[name.split(".").pop()!.toLowerCase()] ?? "application/octet-stream";
+}
 
 function uniqueName(name: string, taken: Record<string, unknown>): string {
   if (!(name in taken)) return name;

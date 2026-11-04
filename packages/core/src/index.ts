@@ -21,3 +21,4 @@ export {
 export { rearrangePdf, type PageSpec } from "./rearrange";
 export { normalizeRotation, type Rotation } from "./rotation";
 export { splitPdf } from "./split";
+export { imageFileName, MAX_PIXELS, MAX_SIDE, rasterSize, type RasterSize } from "./raster";

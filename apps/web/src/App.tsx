@@ -3,12 +3,14 @@ import { ImagesTool } from "./tools/ImagesTool";
 import { MergeTool } from "./tools/MergeTool";
 import { OrganizeTool } from "./tools/OrganizeTool";
 import { SplitTool } from "./tools/SplitTool";
+import { ToImagesTool } from "./tools/ToImagesTool";
 
 const TOOLS = [
   { id: "merge", label: "合併 PDF", desc: "把多個 PDF 依順序合成一個", Component: MergeTool },
   { id: "split", label: "分割 PDF", desc: "把一個 PDF 拆成多個，或擷取部分頁面", Component: SplitTool },
   { id: "organize", label: "整理頁面", desc: "旋轉、刪除頁面，或拖拉調整頁面順序", Component: OrganizeTool },
-  { id: "images", label: "圖片轉 PDF", desc: "把多張圖片合成一個 PDF，每張圖片一頁", Component: ImagesTool },
+  { id: "images", label: "JPG/PNG 轉 PDF", desc: "把多張 JPG、PNG 等圖片合成一個 PDF，每張圖片一頁", Component: ImagesTool },
+  { id: "to-images", label: "PDF 轉 JPG/PNG", desc: "把 PDF 的每一頁轉成 PNG 或 JPG 圖片", Component: ToImagesTool },
 ] as const;
 
 type ToolId = (typeof TOOLS)[number]["id"];

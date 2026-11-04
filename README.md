@@ -7,7 +7,8 @@
 - **合併 PDF**：多個 PDF 依順序合成一個，可以拖拉或用按鈕調整順序
 - **分割 PDF**：依範圍分割、每頁一個檔案、每 N 頁一份、擷取頁面合成單一檔案
 - **整理頁面**：用縮圖旋轉、刪除頁面，或拖拉調整順序；可以多選後一次處理
-- **圖片轉 PDF**：JPG、PNG、WebP、GIF 等圖片合成一個 PDF，可選 A4 / Letter / 與圖片相同大小、方向與邊界；手機照片會依 EXIF 自動轉正
+- **JPG/PNG 轉 PDF**：JPG、PNG（以及 WebP、GIF 等）圖片合成一個 PDF，可選 A4 / Letter / 與圖片相同大小、方向與邊界；手機照片會依 EXIF 自動轉正
+- **PDF 轉 JPG/PNG**：每頁轉成一張圖片，可選格式、解析度（72 / 150 / 300 DPI）、JPG 品質與要轉的頁面；多張圖片打包成 ZIP
 
 ## 開發
 
@@ -24,8 +25,8 @@ pnpm build       # 建置網頁版到 apps/web/dist
 ## 專案結構
 
 ```
-packages/core/   PDF 處理邏輯（合併、分割、整理頁面、圖片轉 PDF），不依賴 UI，網頁版和軟體版共用
-apps/web/        網頁版（React + Vite），PDF 處理在 Web Worker 裡執行，縮圖用 pdf.js 產生
+packages/core/   PDF 處理邏輯（合併、分割、整理頁面、圖片與 PDF 互轉的計算），不依賴 UI，網頁版和軟體版共用
+apps/web/        網頁版（React + Vite），PDF 處理在 Web Worker 裡執行，縮圖與 PDF 轉圖片用 pdf.js
 ```
 
 `apps/web/src/lib/platform.ts` 是平台層：網頁版用瀏覽器下載，之後的軟體版（Tauri）只要替換這一層，就能改成原生的存檔對話框。
