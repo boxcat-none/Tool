@@ -1,10 +1,14 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { ImagesTool } from "./tools/ImagesTool";
 import { MergeTool } from "./tools/MergeTool";
+import { OrganizeTool } from "./tools/OrganizeTool";
 import { SplitTool } from "./tools/SplitTool";
 
 const TOOLS = [
   { id: "merge", label: "合併 PDF", desc: "把多個 PDF 依順序合成一個", Component: MergeTool },
   { id: "split", label: "分割 PDF", desc: "把一個 PDF 拆成多個，或擷取部分頁面", Component: SplitTool },
+  { id: "organize", label: "整理頁面", desc: "旋轉、刪除頁面，或拖拉調整頁面順序", Component: OrganizeTool },
+  { id: "images", label: "圖片轉 PDF", desc: "把多張圖片合成一個 PDF，每張圖片一頁", Component: ImagesTool },
 ] as const;
 
 type ToolId = (typeof TOOLS)[number]["id"];
@@ -17,6 +21,13 @@ function initialTool(): ToolId {
 export function App() {
   const [toolId, setToolId] = useState<ToolId>(initialTool);
   const tool = TOOLS.find((t) => t.id === toolId)!;
+
+  // 手動修改網址或按上一頁時，切換到對應的工具
+  useEffect(() => {
+    const onHash = () => setToolId(initialTool());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
   const select = (id: ToolId) => {
     setToolId(id);

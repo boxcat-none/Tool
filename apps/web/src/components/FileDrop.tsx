@@ -6,10 +6,19 @@ interface Props {
   title: string;
   hint?: string;
   compact?: boolean;
+  /** 檔案選擇器接受的類型，預設 PDF */
+  accept?: string;
 }
 
 /** 拖放或點擊選擇 PDF 檔案。 */
-export function FileDrop({ multiple = false, onFiles, title, hint, compact = false }: Props) {
+export function FileDrop({
+  multiple = false,
+  onFiles,
+  title,
+  hint,
+  compact = false,
+  accept = "application/pdf,.pdf",
+}: Props) {
   const input = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
 
@@ -49,7 +58,7 @@ export function FileDrop({ multiple = false, onFiles, title, hint, compact = fal
       <input
         ref={input}
         type="file"
-        accept="application/pdf,.pdf"
+        accept={accept}
         multiple={multiple}
         hidden
         onChange={(e) => {

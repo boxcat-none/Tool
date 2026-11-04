@@ -1,3 +1,4 @@
+import type { ImagesToPdfOptions, PageSpec } from "@tool/core";
 import type { PageGroup } from "@tool/core/pageRange";
 import type { WorkerRequest, WorkerResponse } from "./worker";
 
@@ -56,4 +57,19 @@ export async function merge(files: File[]): Promise<Uint8Array> {
 export async function split(file: File, groups: PageGroup[]): Promise<Uint8Array[]> {
   const data = await file.arrayBuffer();
   return call<Uint8Array[]>({ op: "split", data, name: file.name, groups }, [data]);
+}
+
+export async function rearrange(file: File, pages: PageSpec[]): Promise<Uint8Array> {
+  const data = await file.arrayBuffer();
+  return call<Uint8Array>({ op: "rearrange", data, name: file.name, pages }, [data]);
+}
+
+export async function imagesToPdf(files: File[], options: ImagesToPdfOptions): Promise<Uint8Array> {
+  const images = await Promise.all(
+    files.map(async (f) => ({ data: await f.arrayBuffer(), name: f.name })),
+  );
+  return call<Uint8Array>(
+    { op: "images", images, options },
+    images.map((i) => i.data),
+  );
 }

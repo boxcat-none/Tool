@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { FileDrop } from "../components/FileDrop";
+import { moveItem, SortableFileList } from "../components/SortableFileList";
 import { Status, type StatusState } from "../components/Status";
 import { ensurePdfName, formatBytes, isPdf } from "../lib/format";
 import * as pdf from "../lib/pdf";
@@ -17,7 +18,6 @@ let nextId = 1;
 export function MergeTool() {
   const [items, setItems] = useState<Item[]>([]);
   const [outName, setOutName] = useState("合併.pdf");
-  const [dragId, setDragId] = useState<number | null>(null);
   const [status, setStatus] = useState<StatusState>({ kind: "idle" });
 
   const addFiles = (files: File[]) => {
@@ -39,15 +39,6 @@ export function MergeTool() {
 
   const update = (id: number, patch: Partial<Item>) =>
     setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
-
-  const move = (from: number, to: number) =>
-    setItems((prev) => {
-      if (to < 0 || to >= prev.length || from === to) return prev;
-      const next = [...prev];
-      const [it] = next.splice(from, 1);
-      next.splice(to, 0, it);
-      return next;
-    });
 
   const remove = (id: number) => setItems((prev) => prev.filter((it) => it.id !== id));
 
@@ -98,40 +89,16 @@ export function MergeTool() {
             </span>
           </div>
 
-          <ol className="files">
-            {items.map((it, index) => (
-              <li
-                key={it.id}
-                className={`file${it.error ? " file--error" : ""}${dragId === it.id ? " file--dragging" : ""}`}
-                draggable
-                onDragStart={(e) => {
-                  setDragId(it.id);
-                  e.dataTransfer.effectAllowed = "move";
-                }}
-                onDragEnd={() => setDragId(null)}
-                onDragOver={(e) => {
-                  if (dragId === null) return;
-                  e.preventDefault();
-                  const from = items.findIndex((x) => x.id === dragId);
-                  if (from !== index) move(from, index);
-                }}
-              >
-                <span className="file__grip" aria-hidden="true">⋮⋮</span>
-                <span className="file__index">{index + 1}</span>
-                <span className="file__main">
-                  <span className="file__name" title={it.file.name}>{it.file.name}</span>
-                  <span className="file__meta">
-                    {it.error ? it.error : `${formatBytes(it.file.size)} · ${it.pages === undefined ? "讀取中…" : `${it.pages} 頁`}`}
-                  </span>
-                </span>
-                <span className="file__actions">
-                  <button type="button" className="icon" aria-label={`把 ${it.file.name} 往上移`} disabled={index === 0} onClick={() => move(index, index - 1)}>↑</button>
-                  <button type="button" className="icon" aria-label={`把 ${it.file.name} 往下移`} disabled={index === items.length - 1} onClick={() => move(index, index + 1)}>↓</button>
-                  <button type="button" className="icon icon--danger" aria-label={`移除 ${it.file.name}`} onClick={() => remove(it.id)}>✕</button>
-                </span>
-              </li>
-            ))}
-          </ol>
+          <SortableFileList
+            items={items.map((it) => ({
+              id: it.id,
+              name: it.file.name,
+              error: it.error,
+              meta: `${formatBytes(it.file.size)} · ${it.pages === undefined ? "讀取中…" : `${it.pages} 頁`}`,
+            }))}
+            onMove={(from, to) => setItems((prev) => moveItem(prev, from, to))}
+            onRemove={remove}
+          />
 
           <div className="actions">
             <label className="field">
