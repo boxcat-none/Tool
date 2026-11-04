@@ -8,7 +8,7 @@
 2. **只復原自己的動作**：在電腦按復原，不會把 iPad 剛畫的線復原掉。
 3. **即時同步的資料量小**：每畫一筆只需要傳幾十個 bytes。
 4. **筆記本存成自有格式，PDF 用匯出的**（方案 C，與 GoodNotes 相同；2026-11-04 決定）：
-   平常存 `.toolnote` 檔，要分享時再匯出 PDF。
+   平常存 `.guganote` 檔，要分享時再匯出 PDF。
 
 ## 結構
 
@@ -79,12 +79,12 @@ undo.undo(); // 只復原本機的動作
 
 量測：`pnpm --filter @tool/notes exec vitest run test/size.test.ts`
 
-## 筆記本檔案（.toolnote）
+## 筆記本檔案（.guganote）
 
 程式：`packages/notes/src/file.ts`。一個 ZIP 檔：
 
 ```
-manifest.json      { format: "pdf-toolbox-notebook", version: 1, title, savedAt, pages }
+manifest.json      { format: "guganote", version: 1, title, savedAt, pages }
 notebook.yjs       Yjs 文件（壓縮）；保留合併所需資訊，之後可以和其他裝置的修改合併
 files/<sha256>     原始 PDF、圖片（不再壓縮）；只打包仍被頁面使用的檔案
 ```
@@ -106,7 +106,7 @@ files/<sha256>     原始 PDF、圖片（不再壓縮）；只打包仍被頁面
 | `annotations` | 標準手繪註解（不含可編輯資料） | 對方要在 Acrobat 等軟體中隱藏或刪除筆跡 |
 | `none` | 不含筆跡 | 只要整理過的頁面 |
 
-匯出的 PDF **不含**可編輯的原始筆跡資料；要繼續編輯請開 `.toolnote` 檔。
+匯出的 PDF **不含**可編輯的原始筆跡資料；要繼續編輯請開 `.guganote` 檔。
 （`core/ink` 仍保留 `includeData` 選項與 `readInk`，若之後要支援「PDF 也能繼續編輯」可以直接啟用。）
 
 ### 紙張樣式
@@ -130,6 +130,6 @@ files/<sha256>     原始 PDF、圖片（不再壓縮）；只打包仍被頁面
 
 ## 後續
 
-- W4：自動儲存（網頁版 IndexedDB／軟體版檔案系統），開啟與儲存 `.toolnote` 的介面。
+- W4：自動儲存（網頁版 IndexedDB／軟體版檔案系統），開啟與儲存 `.guganote` 的介面。
 - W9–W11：同步（Yjs 更新訊息、awareness 即時筆跡、檔案庫傳輸）。
 - 圖片（W12）：新增 `images` Y.Map（pageId → 位置、大小、fileId）。

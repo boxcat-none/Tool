@@ -124,7 +124,7 @@ describe("紙張樣式", () => {
   });
 });
 
-describe("筆記本檔案（.toolnote）", () => {
+describe("筆記本檔案（.guganote）", () => {
   it("儲存後重新開啟：頁面、筆跡、原始檔案都在，還能再匯出", async () => {
     const { nb, blobs, ids } = await setup();
     nb.insertPages(3, [{ source: { kind: "template", template: "dot" }, width: 595.28, height: 841.89 }]);

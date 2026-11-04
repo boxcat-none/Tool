@@ -4,7 +4,7 @@ import { MemoryBlobStore, sha256Hex, type BlobStore } from "./blobs";
 import { Notebook } from "./notebook";
 
 /**
- * 筆記本檔案（.toolnote）：一個 ZIP 檔，內容：
+ * 筆記本檔案（.guganote）：一個 ZIP 檔，內容：
  *
  *   manifest.json      格式名稱、版本、標題、儲存時間
  *   notebook.yjs       Yjs 文件（頁面、筆跡；保留合併所需的資訊，之後可以和其他裝置同步）
@@ -13,8 +13,8 @@ import { Notebook } from "./notebook";
  * 用 ZIP 是為了：單一檔案方便備份與分享；格式公開，必要時可以手動解開取回原始 PDF。
  */
 
-export const NOTEBOOK_EXTENSION = "toolnote";
-export const NOTEBOOK_FORMAT = "pdf-toolbox-notebook";
+export const NOTEBOOK_EXTENSION = "guganote";
+export const NOTEBOOK_FORMAT = "guganote";
 export const NOTEBOOK_FILE_VERSION = 1;
 
 interface Manifest {

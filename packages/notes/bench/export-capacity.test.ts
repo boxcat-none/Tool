@@ -1,5 +1,5 @@
 /**
- * 方案 C 容量量測：筆記本檔（.toolnote）與匯出 PDF 的大小。
+ * 方案 C 容量量測：筆記本檔（.guganote）與匯出 PDF 的大小。
  *
  *   EXPORT_BENCH_OUT=/path pnpm --filter @tool/notes exec vitest run --dir bench --config /dev/null
  */
@@ -46,7 +46,7 @@ describe.skipIf(!OUT)("方案 C 容量", () => {
       const flat = await exportPdf(nb, blobs, { ink: "flatten" });
       const annots = await exportPdf(nb, blobs, { ink: "annotations" });
       rows.push(`| ${name} | ${nb.strokeCount(page)} | ${kb(file.length - base - source.length)} | ${kb(flat.length - plain.length)} | ${kb(annots.length - plain.length)} |`);
-      writeFileSync(join(OUT!, `${name}.toolnote`), file);
+      writeFileSync(join(OUT!, `${name}.guganote`), file);
       writeFileSync(join(OUT!, `${name}-合併.pdf`), flat);
       writeFileSync(join(OUT!, `${name}-註解.pdf`), annots);
     }
@@ -58,7 +58,7 @@ describe.skipIf(!OUT)("方案 C 容量", () => {
     const added = nb.insertPages(1, (["blank", "lined", "grid", "dot"] as const).map((template) => ({ source: { kind: "template" as const, template }, ...A4 })));
     for (const s of handwrittenPage(7, { chars: 40, highlights: 1 })) nb.addStroke(p1, s);
     for (const s of handwrittenPage(8, { chars: 60, highlights: 0 })) nb.addStroke(added[1], s);
-    writeFileSync(join(OUT!, "範例筆記本.toolnote"), await saveNotebookFile(nb, blobs));
+    writeFileSync(join(OUT!, "範例筆記本.guganote"), await saveNotebookFile(nb, blobs));
     writeFileSync(join(OUT!, "範例-合併.pdf"), await exportPdf(nb, blobs, { ink: "flatten" }));
     writeFileSync(join(OUT!, "範例-註解.pdf"), await exportPdf(nb, blobs, { ink: "annotations" }));
 
