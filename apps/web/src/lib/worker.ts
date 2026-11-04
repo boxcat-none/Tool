@@ -28,7 +28,10 @@ export type WorkerRequest =
   | { op: "rearrange"; data: ArrayBuffer; name: string; pages: PageSpec[] }
   | { op: "images"; images: RawImage[]; options: ImagesToPdfOptions }
   | { op: "putBlob"; blobId: string; data: ArrayBuffer }
-  | { op: "notebookPdf"; update: Uint8Array; ink: "none" | "flatten" | "annotations" };
+  | { op: "notebookPdf"; update: Uint8Array; ink: "none" | "flatten" | "annotations"; passwords?: Record<string, string> };
+
+/** 密碼錯誤時回給主程式的訊息（主程式據此再問一次密碼） */
+export const WRONG_PASSWORD = "PDF 的開啟密碼不正確。";
 
 /**
  * 筆記本用到的原始檔快取在 Worker 裡：同一個檔案只需要傳一次，
@@ -76,7 +79,7 @@ self.onmessage = async (event: MessageEvent<WorkerRequest & { id: number }>) => 
       case "notebookPdf": {
         const doc = new Y.Doc();
         Y.applyUpdate(doc, req.update);
-        result = await exportPdf(new Notebook(doc), workerBlobs, { ink: req.ink });
+        result = await exportPdf(new Notebook(doc), workerBlobs, { ink: req.ink, passwords: req.passwords });
         doc.destroy();
         break;
       }
@@ -88,10 +91,13 @@ self.onmessage = async (event: MessageEvent<WorkerRequest & { id: number }>) => 
     self.postMessage({ id, ok: true, result } satisfies WorkerResponse, transfer);
   } catch (err) {
     const message =
-      err instanceof PdfToolError || (err instanceof Error && err.message.startsWith("找不到原始檔案"))
+      err instanceof PdfToolError || (err instanceof Error && /^(找不到原始檔案|「)/.test(err.message))
         ? err.message
-        : "處理時發生未預期的錯誤，請再試一次。";
-    if (!(err instanceof PdfToolError)) console.error(err);
+        : err instanceof Error && /password/i.test(err.message)
+          ? WRONG_PASSWORD
+          : "處理時發生未預期的錯誤，請再試一次。";
+    // 只記錄真正意外的錯誤（密碼錯誤、檔案損毀等是使用者會遇到的正常情況）
+    if (message.startsWith("處理時發生未預期的錯誤")) console.error(err);
     self.postMessage({ id, ok: false, message } satisfies WorkerResponse);
   }
 };

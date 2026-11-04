@@ -4,5 +4,5 @@
  */
 export { COORD_SCALE, decodeStroke, decodeStrokes, encodeStroke, encodeStrokes } from "./codec";
 export { outlineBounds, strokeOutline } from "./outline";
-export { normalizeStroke, simplifyPoints } from "./simplify";
+export { normalizeStroke, simplify2D, simplifyPoints } from "./simplify";
 export type { InkPoint, InkTool, Stroke } from "./types";

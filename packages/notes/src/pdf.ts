@@ -4,6 +4,7 @@ import { normalizeRotation } from "@tool/core/rotation";
 import { degrees, PDFDocument, type PDFPage } from "pdf-lib";
 import type { BlobStore } from "./blobs";
 import type { Notebook } from "./notebook";
+import { readOutline, writeOutline, type OutlineItem } from "./outline";
 import { PaperPainter } from "./paper";
 
 
@@ -43,11 +44,15 @@ export interface ExportOptions {
   ink?: "flatten" | "annotations" | "none";
   /** 只匯出這些頁面（預設全部，依筆記本順序） */
   pageIds?: string[];
+  /** 是否保留原始 PDF 的目錄（書籤），目標頁對應到新頁碼。預設 true */
+  outline?: boolean;
+  /** 有密碼的原始檔：檔案代號 → 開啟密碼（只在記憶體中使用，不會儲存） */
+  passwords?: Record<string, string>;
 }
 
 /** 把筆記本匯出成 PDF */
 export async function exportPdf(nb: Notebook, blobs: BlobStore, options: ExportOptions = {}): Promise<Uint8Array> {
-  const { ink = "flatten" } = options;
+  const { ink = "flatten", outline = true, passwords = {} } = options;
   const ids = options.pageIds ?? nb.pageIds;
   const out = await PDFDocument.create();
   const painter = new PaperPainter(out);
@@ -63,14 +68,38 @@ export async function exportPdf(nb: Notebook, blobs: BlobStore, options: ExportO
       wanted.set(page.source.fileId, list);
     }
   }
+  // 各原始檔的目錄，目標頁先換成「全域編號」：該檔的起始編號 + 頁面索引
+  const outlines: OutlineItem[] = [];
+  const targetRef = new Map<number, PDFPage>();
+  let base = 0;
   for (const [fileId, indices] of wanted) {
     const bytes = await blobs.get(fileId);
     if (!bytes) throw new Error(`找不到原始檔案「${nb.getFile(fileId)?.name ?? fileId}」。`);
-    const src = await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false });
+    const password = passwords[fileId];
+    // 有密碼：用密碼解密後複製頁面（輸出的 PDF 不再有密碼保護）
+    const src = password
+      ? await PDFDocument.load(bytes, { password, updateMetadata: false })
+      : await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false });
+    // 沒給密碼就複製加密的內容，會靜靜產生一份打不開的 PDF，所以直接報錯
+    if (!password && src.isEncrypted) {
+      throw new Error(`「${nb.getFile(fileId)?.name ?? fileId}」有密碼保護，需要密碼才能產生 PDF。`);
+    }
     const pages = await out.copyPages(src, indices);
     const byIndex = new Map<number, PDFPage[]>();
-    indices.forEach((index, i) => byIndex.set(index, [...(byIndex.get(index) ?? []), pages[i]]));
+    indices.forEach((index, i) => {
+      byIndex.set(index, [...(byIndex.get(index) ?? []), pages[i]]);
+      // 同一頁出現多次時，目錄指向第一次出現的位置
+      if (!targetRef.has(base + index)) targetRef.set(base + index, pages[i]);
+    });
     copies.set(fileId, byIndex);
+    if (outline) {
+      try {
+        outlines.push(...offsetTargets(readOutline(src), base));
+      } catch {
+        // 目錄壞掉不影響匯出
+      }
+    }
+    base += src.getPageCount();
   }
 
   const inkByPage = new Map<number, Stroke[]>();
@@ -93,6 +122,15 @@ export async function exportPdf(nb: Notebook, blobs: BlobStore, options: ExportO
     }
   });
 
+  // 目錄：只保留目標頁還在的項目（頁面要先加入文件，參照才有效）
+  const added = new Set(out.getPages());
+  if (outlines.length) {
+    writeOutline(out, outlines, (t) => {
+      const p = targetRef.get(t);
+      return p && added.has(p) ? p.ref : undefined;
+    });
+  }
+
   if (ink === "flatten") flattenInk(out, inkByPage);
   else if (ink === "annotations") writeInk(out, inkByPage);
 
@@ -100,4 +138,12 @@ export async function exportPdf(nb: Notebook, blobs: BlobStore, options: ExportO
   out.setProducer("PDF 工具箱");
   out.setCreator("PDF 工具箱");
   return out.save();
+}
+
+function offsetTargets(items: OutlineItem[], base: number): OutlineItem[] {
+  return items.map((it) => ({
+    ...it,
+    target: it.target === null ? null : it.target + base,
+    children: offsetTargets(it.children, base),
+  }));
 }

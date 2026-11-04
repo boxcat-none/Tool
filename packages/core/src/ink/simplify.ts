@@ -53,3 +53,41 @@ export function normalizeStroke(stroke: Stroke, tolerance = 0.15): Stroke {
     ]),
   };
 }
+
+/** 平面版的點精簡（外框用，沒有筆壓），不建立暫存陣列 */
+export function simplify2D(points: [number, number][], tolerance: number): [number, number][] {
+  const n = points.length;
+  if (n <= 2 || tolerance <= 0) return points;
+  const keep = new Uint8Array(n);
+  keep[0] = keep[n - 1] = 1;
+  const stack: number[] = [0, n - 1];
+  const tol2 = tolerance * tolerance;
+  while (stack.length) {
+    const b = stack.pop()!;
+    const a = stack.pop()!;
+    const [ax, ay] = points[a];
+    const [bx, by] = points[b];
+    const dx = bx - ax, dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    let max = 0;
+    let index = -1;
+    for (let i = a + 1; i < b; i++) {
+      const [px, py] = points[i];
+      let t = len2 === 0 ? 0 : ((px - ax) * dx + (py - ay) * dy) / len2;
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const ex = ax + t * dx - px, ey = ay + t * dy - py;
+      const d2 = ex * ex + ey * ey;
+      if (d2 > max) {
+        max = d2;
+        index = i;
+      }
+    }
+    if (index !== -1 && max > tol2) {
+      keep[index] = 1;
+      stack.push(a, index, index, b);
+    }
+  }
+  const out: [number, number][] = [];
+  for (let i = 0; i < n; i++) if (keep[i]) out.push(points[i]);
+  return out;
+}

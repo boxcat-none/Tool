@@ -2,6 +2,9 @@ import type { ImagesToPdfOptions, PageSpec } from "@tool/core";
 import type { PageGroup } from "@tool/core/pageRange";
 import type { WorkerRequest, WorkerResponse } from "./worker";
 
+/** 與 worker.ts 的 WRONG_PASSWORD 相同（不直接 import，避免把 Worker 程式打包進主程式） */
+export const WRONG_PASSWORD = "PDF 的開啟密碼不正確。";
+
 /**
  * 主執行緒這邊的 PDF API。實際處理在 Web Worker 裡進行，
  * 處理大檔案時介面不會卡住。
@@ -87,6 +90,7 @@ export async function notebookPdf(
   update: Uint8Array,
   files: { ids: string[]; get(id: string): Promise<Uint8Array | undefined> },
   ink: "none" | "flatten" | "annotations",
+  passwords?: Record<string, string>,
 ): Promise<Uint8Array> {
   for (const id of files.ids) {
     if (sentBlobs.has(id)) continue;
@@ -97,5 +101,5 @@ export async function notebookPdf(
     sentBlobs.add(id);
   }
   const copy = update.slice();
-  return call<Uint8Array>({ op: "notebookPdf", update: copy, ink }, [copy.buffer as ArrayBuffer]);
+  return call<Uint8Array>({ op: "notebookPdf", update: copy, ink, passwords }, [copy.buffer as ArrayBuffer]);
 }
