@@ -214,6 +214,13 @@ export class Notebook {
     return this.files.get(id);
   }
 
+  /** 頁面實際引用到的檔案（刪掉的頁面引用的檔案不算） */
+  get usedFileIds(): string[] {
+    const ids = new Set<string>();
+    for (const page of this.pageList) if (page.source.kind === "pdf") ids.add(page.source.fileId);
+    return [...ids];
+  }
+
   // ── 變動通知、復原 ──────────────────────────────────
 
   /** 任何變動（包含其他裝置同步過來的）都會呼叫 callback；回傳取消訂閱的函式 */

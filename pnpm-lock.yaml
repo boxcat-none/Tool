@@ -81,9 +81,15 @@ importers:
       '@tool/core':
         specifier: workspace:*
         version: link:../core
+      fflate:
+        specifier: 0.8.3
+        version: 0.8.3
       fractional-indexing:
         specifier: 4.0.0
         version: 4.0.0
+      pdf-lib:
+        specifier: 1.17.1
+        version: 1.17.1
       yjs:
         specifier: 13.6.33
         version: 13.6.33

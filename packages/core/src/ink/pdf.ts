@@ -25,7 +25,7 @@ export interface WriteInkOptions {
   compress?: boolean;
   /** 原始資料格式（json 只用於容量比較）。預設 binary */
   dataFormat?: "binary" | "json";
-  /** 是否寫入可編輯的原始資料。預設 true */
+  /** 是否寫入可編輯的原始資料（方案 D 用）。方案 C 的匯出不需要，預設 false */
   includeData?: boolean;
 }
 
@@ -41,7 +41,7 @@ export function writeInk(doc: PDFDocument, ink: Map<number, Stroke[]>, options: 
     group = true,
     compress = true,
     dataFormat = "binary",
-    includeData = true,
+    includeData = false,
   } = options;
   const ctx = doc.context;
   const pages = doc.getPages();
@@ -67,26 +67,7 @@ export function writeInk(doc: PDFDocument, ink: Map<number, Stroke[]>, options: 
     let n = 0;
     for (const list of groups.values()) {
       const highlighter = list[0].tool === "highlighter";
-      const outlines = list.map((s) => simplifyPoints(strokeOutline(s).map(([x, y]) => [x, y, 0]), 0.08));
-
-      // 外觀內容串流：每筆一個填色多邊形
-      let content = "";
-      if (highlighter) content += "/H gs\n";
-      for (let i = 0; i < list.length; i++) {
-        const [r, g, b] = parseColor(list[i].color).map((v) => v / 255);
-        content += `${fmt(r, 3)} ${fmt(g, 3)} ${fmt(b, 3)} rg\n`;
-        outlines[i].forEach(([x, y], j) => (content += `${fmt(x)} ${fmt(y)} ${j === 0 ? "m" : "l"}\n`));
-        content += "h f\n";
-      }
-
-      const bounds = outlines.reduce(
-        (acc, o) => {
-          if (o.length === 0) return acc;
-          const [a, b, c, d] = outlineBounds(o.map(([x, y]) => [x, y]));
-          return [Math.min(acc[0], a), Math.min(acc[1], b), Math.max(acc[2], c), Math.max(acc[3], d)];
-        },
-        [Infinity, Infinity, -Infinity, -Infinity],
-      );
+      const { content, bounds } = inkDrawing(list, highlighter ? "/H gs\n" : "");
       const rect = [bounds[0] - 1, bounds[1] - 1, bounds[2] + 1, bounds[3] + 1].map((v) => round(v, 1));
 
       const apDict = {
@@ -128,6 +109,51 @@ export function writeInk(doc: PDFDocument, ink: Map<number, Stroke[]>, options: 
       page.node.addAnnot(ctx.register(ctx.obj(annot as never)));
     }
   }
+}
+
+/**
+ * 把筆跡直接畫進頁面內容（「合併」匯出）：任何 PDF 軟體都會顯示，但無法再個別選取或刪除筆跡。
+ * 筆跡會先標準化（點精簡、四捨五入），與畫面上看到的一致。
+ */
+export function flattenInk(doc: PDFDocument, ink: Map<number, Stroke[]>, simplifyTolerance = 0.15): void {
+  const ctx = doc.context;
+  const pages = doc.getPages();
+  for (const [pageIndex, strokes] of ink) {
+    const page = pages[pageIndex];
+    if (!page || strokes.length === 0) continue;
+    const prepared = strokes.map((s) => normalizeStroke(s, simplifyTolerance)).filter((s) => s.points.length > 0);
+    const pens = prepared.filter((s) => s.tool !== "highlighter");
+    const highlights = prepared.filter((s) => s.tool === "highlighter");
+
+    let content = "";
+    // 螢光筆先畫（在下層），再畫鋼筆
+    if (highlights.length) {
+      page.node.setExtGState(PDFName.of("PTHighlight"), ctx.obj({ Type: "ExtGState", ca: HIGHLIGHTER_ALPHA, BM: "Multiply" }));
+      content += "q /PTHighlight gs\n" + inkDrawing(highlights).content + "Q\n";
+    }
+    if (pens.length) content += "q\n" + inkDrawing(pens).content + "Q\n";
+
+    // 原本的內容包在 q…Q 裡，避免它沒有還原的繪圖狀態（例如座標變換）影響筆跡位置
+    page.node.wrapContentStreams(ctx.register(ctx.stream("q\n")), ctx.register(ctx.stream("Q\n")));
+    page.node.addContentStream(ctx.register(ctx.flateStream(content)));
+  }
+}
+
+/** 一組筆畫的 PDF 繪圖指令（每筆一個填色多邊形）與範圍 */
+function inkDrawing(strokes: Stroke[], prefix = "") {
+  let content = prefix;
+  let bounds: [number, number, number, number] = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const s of strokes) {
+    const outline = simplifyPoints(strokeOutline(s).map(([x, y]) => [x, y, 0]), 0.08);
+    if (outline.length === 0) continue;
+    const [r, g, b] = parseColor(s.color).map((v) => v / 255);
+    content += `${fmt(r, 3)} ${fmt(g, 3)} ${fmt(b, 3)} rg\n`;
+    outline.forEach(([x, y], j) => (content += `${fmt(x)} ${fmt(y)} ${j === 0 ? "m" : "l"}\n`));
+    content += "h f\n";
+    const [a, c, d, e] = outlineBounds(outline.map(([x, y]) => [x, y]));
+    bounds = [Math.min(bounds[0], a), Math.min(bounds[1], c), Math.max(bounds[2], d), Math.max(bounds[3], e)];
+  }
+  return { content, bounds };
 }
 
 export interface InkAnnotationRef {

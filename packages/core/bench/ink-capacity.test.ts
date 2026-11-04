@@ -28,7 +28,7 @@ const NAIVE: WriteInkOptions & { objectStreams: boolean } = {
   dataFormat: "json",
   objectStreams: false,
 };
-const OPTIMIZED: WriteInkOptions & { objectStreams: boolean } = { objectStreams: true };
+const OPTIMIZED: WriteInkOptions & { objectStreams: boolean } = { objectStreams: true, includeData: true };
 
 async function build(pages: Stroke[][], opts: WriteInkOptions & { objectStreams: boolean }) {
   const doc = await PDFDocument.create();

@@ -2,6 +2,7 @@ import { PDFDocument, PDFName } from "pdf-lib";
 import { describe, expect, it } from "vitest";
 import {
   decodeStrokes,
+  flattenInk,
   encodeStrokes,
   readInk,
   removeInk,
@@ -76,7 +77,7 @@ describe("writeInk / readInk / removeInk", () => {
     const doc = await blankDoc(2);
     const strokes = [line(100, 100, 300, 120), line(100, 200, 120, 400, 80, "#dc2626")];
     const hl: Stroke = { ...line(50, 700, 400, 700), tool: "highlighter", color: "#facc15", size: 14 };
-    writeInk(doc, new Map([[1, [...strokes, hl]]]));
+    writeInk(doc, new Map([[1, [...strokes, hl]]]), { includeData: true });
     const reopened = await PDFDocument.load(await doc.save());
 
     const ink = readInk(reopened);
@@ -91,7 +92,7 @@ describe("writeInk / readInk / removeInk", () => {
 
   it("同一頁同顏色合成一個註解，並包含外觀、InkList 與原始資料", async () => {
     const doc = await blankDoc();
-    writeInk(doc, new Map([[0, [line(10, 10, 50, 50), line(60, 60, 90, 90), line(10, 90, 90, 10, 50, "#000000")]]]));
+    writeInk(doc, new Map([[0, [line(10, 10, 50, 50), line(60, 60, 90, 90), line(10, 90, 90, 10, 50, "#000000")]]]), { includeData: true });
     const annots = doc.getPage(0).node.Annots()!.asArray().map((r) => doc.context.lookup(r) as never as import("pdf-lib").PDFDict);
     expect(annots).toHaveLength(2);
     for (const a of annots) {
@@ -110,7 +111,7 @@ describe("writeInk / readInk / removeInk", () => {
     doc.getPage(0).node.addAnnot(other);
     const withOther = (await doc.save()).length;
 
-    writeInk(doc, new Map([[0, Array.from({ length: 50 }, (_, i) => line(10, i * 10, 200, i * 10 + 5))]]));
+    writeInk(doc, new Map([[0, Array.from({ length: 50 }, (_, i) => line(10, i * 10, 200, i * 10 + 5))]]), { includeData: true });
     const withInk = await PDFDocument.load(await doc.save());
     expect(removeInk(withInk)).toBe(1);
     const after = await withInk.save();
@@ -129,5 +130,44 @@ describe("writeInk / readInk / removeInk", () => {
     // size 是中等筆壓時的粗細；thinning 0.6 時最大筆壓約 1.6 倍
     const ys = o.map(([, y]) => y);
     expect(Math.max(...ys) - Math.min(...ys)).toBeLessThanOrEqual(2 * 1.6);
+  });
+});
+
+describe("匯出（方案 C）", () => {
+  it("註解模式預設不含可編輯資料", async () => {
+    const doc = await blankDoc();
+    writeInk(doc, new Map([[0, [line(10, 10, 50, 50)]]]));
+    const annot = doc.context.lookup(doc.getPage(0).node.Annots()!.get(0)) as import("pdf-lib").PDFDict;
+    expect(annot.get(PDFName.of("Subtype"))).toBe(PDFName.of("Ink"));
+    expect(annot.has(PDFName.of("PDFToolboxInk"))).toBe(false);
+    expect(readInk(doc).size).toBe(0);
+  });
+
+  it("合併模式把筆跡畫進頁面內容，沒有註解，原內容包在 q…Q 裡", async () => {
+    const doc = await blankDoc();
+    // 原本的內容留下沒有還原的座標變換（不良 PDF 常見），不能影響筆跡位置
+    const page = doc.getPage(0);
+    page.node.addContentStream(doc.context.register(doc.context.stream("2 0 0 2 0 0 cm\n")));
+    const hl: Stroke = { ...line(50, 700, 400, 700), tool: "highlighter", color: "#facc15", size: 14 };
+    flattenInk(doc, new Map([[0, [line(100, 100, 300, 120), hl]]]));
+    const reopened = await PDFDocument.load(await doc.save());
+    const p = reopened.getPage(0);
+    expect(p.node.Annots()?.size() ?? 0).toBe(0);
+
+    const contents = p.node.Contents()!;
+    const arr = contents instanceof (await import("pdf-lib")).PDFArray ? contents.asArray() : [contents];
+    const texts = arr.map((ref) => {
+      const st = reopened.context.lookup(ref) as import("pdf-lib").PDFRawStream;
+      const bytes = st.dict.has(PDFName.of("Filter"))
+        ? (require("pdf-lib") as typeof import("pdf-lib")).decodePDFRawStream(st).decode()
+        : st.contents;
+      return new TextDecoder().decode(bytes);
+    });
+    expect(texts[0].trim()).toBe("q");
+    expect(texts.at(-2)!.trim()).toBe("Q");
+    const ink = texts.at(-1)!;
+    expect(ink).toContain("/PTHighlight gs");
+    // 螢光筆在鋼筆之前（下層）
+    expect(ink.indexOf("/PTHighlight gs")).toBeLessThan(ink.lastIndexOf("0.118 0.251 0.686 rg"));
   });
 });
