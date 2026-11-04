@@ -6,7 +6,7 @@ import type { FileInfo, NewPage, PageInfo, PageSource } from "./types";
 /**
  * 筆記本資料模型（Yjs 文件）。多台裝置各自修改後可以自動合併，不會互相覆蓋。
  *
- *   meta     Y.Map     { schema, title, createdAt }
+ *   meta     Y.Map     { schema, id, title, createdAt }
  *   pages    Y.Map     pageId → Y.Map { order, source, width, height, rotation }
  *   strokes  Y.Map     pageId → Y.Array<Uint8Array>（每筆 = 8 bytes 代號 + 單筆二進位編碼；陣列順序 = 疊放順序）
  *   files    Y.Map     fileId → FileInfo（檔案本身在 BlobStore）
@@ -59,10 +59,16 @@ export class Notebook {
     const nb = new Notebook();
     nb.doc.transact(() => {
       nb.meta.set("schema", SCHEMA_VERSION);
+      nb.meta.set("id", newId());
       nb.meta.set("title", title);
       nb.meta.set("createdAt", Date.now());
     });
     return nb;
+  }
+
+  /** 筆記本代號（建立時產生，之後不變；同一本筆記本在不同裝置上代號相同） */
+  get id(): string {
+    return (this.meta.get("id") as string) ?? "";
   }
 
   get title(): string {
@@ -231,6 +237,30 @@ export class Notebook {
     return () => this.doc.off("update", handler);
   }
 
+  /** 頁面結構（新增、刪除、順序、大小、旋轉）改變時通知 */
+  onPagesChange(callback: () => void): () => void {
+    const handler = () => callback();
+    this.pages.observeDeep(handler);
+    return () => this.pages.unobserveDeep(handler);
+  }
+
+  /** 筆跡改變時通知，並告訴是哪些頁面 */
+  onStrokesChange(callback: (pageIds: Set<string>) => void): () => void {
+    const handler = (events: Y.YEvent<Y.AbstractType<unknown>>[]) => {
+      const ids = new Set<string>();
+      for (const e of events) {
+        if (e.target === this.strokesMap) {
+          for (const key of (e as Y.YMapEvent<unknown>).keysChanged) ids.add(key);
+        } else if (typeof e.path[0] === "string") {
+          ids.add(e.path[0]);
+        }
+      }
+      if (ids.size) callback(ids);
+    };
+    this.strokesMap.observeDeep(handler);
+    return () => this.strokesMap.unobserveDeep(handler);
+  }
+
   /**
    * 建立復原管理器：只追蹤 `origin` 所做的修改，
    * 所以在電腦按「復原」不會把 iPad 剛畫的線復原掉。
@@ -256,3 +286,5 @@ function newId(): string {
   crypto.getRandomValues(bytes);
   return [...bytes].map((b) => b.toString(36).padStart(2, "0")).join("").slice(0, 16);
 }
+
+export type { FileInfo, NewPage, PageInfo, PageSource, PaperTemplate } from "./types";

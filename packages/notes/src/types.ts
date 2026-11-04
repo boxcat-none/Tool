@@ -29,4 +29,8 @@ export interface FileInfo {
   name: string;
   mime: string;
   size: number;
+  /** PDF 的總頁數（判斷筆記本是否就是「原封不動的原始 PDF」） */
+  pageCount?: number;
+  /** 有密碼保護的 PDF：只能閱讀與書寫，不能插頁、刪頁或匯出 */
+  encrypted?: boolean;
 }

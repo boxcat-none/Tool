@@ -53,12 +53,14 @@ interface Props {
   onUndo: () => void;
   onRedo: () => void;
   onExport: () => void;
+  /** 存成 .guganote 檔 */
+  onSave: () => void;
   /** 不能匯出時的原因（例如有密碼的 PDF） */
   exportBlocked?: string;
   exporting: boolean;
 }
 
-export function InkToolbar({ settings, onChange, canUndo, canRedo, onUndo, onRedo, onExport, exportBlocked, exporting }: Props) {
+export function InkToolbar({ settings, onChange, canUndo, canRedo, onUndo, onRedo, onExport, onSave, exportBlocked, exporting }: Props) {
   const { tool } = settings;
   const isHl = tool === "highlighter";
   const colors = isHl ? HIGHLIGHTER_COLORS : PEN_COLORS;
@@ -142,6 +144,9 @@ export function InkToolbar({ settings, onChange, canUndo, canRedo, onUndo, onRed
       </label>
 
       <span className="reader__spacer" />
+      <button type="button" className="btn ink-toolbar__export" title="把整本筆記本（含原始 PDF 與筆跡）存成一個檔案，可以備份或帶到其他裝置（Ctrl+S）" onClick={onSave}>
+        存成 .guganote
+      </button>
       <button
         type="button"
         className="btn ink-toolbar__export"

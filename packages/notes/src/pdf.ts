@@ -20,7 +20,7 @@ export async function importPdf(
 ): Promise<string[]> {
   const doc = await loadPdf(bytes, name); // 加密、損毀會在這裡回報清楚的錯誤
   const fileId = await blobs.put(bytes);
-  nb.addFile({ id: fileId, name, mime: "application/pdf", size: bytes.length });
+  nb.addFile({ id: fileId, name, mime: "application/pdf", size: bytes.length, pageCount: doc.getPageCount() });
   const pages = doc.getPages().map((p, index) => {
     const { width, height } = p.getSize();
     return {

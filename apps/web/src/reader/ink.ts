@@ -104,6 +104,16 @@ export class InkController {
     this.redraw(index);
   }
 
+  /** 顯示用的 PDF 換了（插頁、刪頁等），舊的頁面元素都作廢 */
+  reset() {
+    for (const l of this.layers.values()) {
+      l.root.remove();
+      l.input.remove();
+    }
+    this.layers.clear();
+    this.pageCache.clear();
+  }
+
   /** 工具改變時更新游標與輸入層 */
   refreshTool() {
     for (const l of this.layers.values()) this.applyTool(l);
@@ -377,4 +387,32 @@ function distanceToStroke(stroke: Stroke, x: number, y: number): number {
     best = Math.min(best, Math.hypot(ax + t * dx - x, ay + t * dy - y));
   }
   return best;
+}
+
+/**
+ * 在縮圖等其他 canvas 上畫出某頁的筆跡（transform：PDF 座標 → 該 canvas 像素）。
+ * `minPx`：筆畫在這個 canvas 上至少多寬（像素）。縮圖很小，細筆縮小後幾乎看不見，
+ * 加粗一點才看得出哪一頁有筆記。
+ */
+export function paintStrokes(ctx: CanvasRenderingContext2D, transform: number[], strokes: Stroke[], minPx = 0) {
+  const [a, b, c, d, e, f] = transform;
+  const scale = Math.hypot(a, b) || 1;
+  ctx.save();
+  ctx.setTransform(a, b, c, d, e, f);
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  for (const s of strokes) {
+    const highlighter = s.tool === "highlighter";
+    ctx.globalAlpha = highlighter ? HIGHLIGHTER_ALPHA : 1;
+    ctx.globalCompositeOperation = highlighter ? "multiply" : "source-over";
+    ctx.fillStyle = s.color;
+    const path = outlinePath(s);
+    ctx.fill(path);
+    if (minPx > 0 && !highlighter && s.size * scale < minPx) {
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth = minPx / scale - s.size * 0.5;
+      ctx.stroke(path);
+    }
+  }
+  ctx.restore();
 }
