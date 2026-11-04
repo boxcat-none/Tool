@@ -177,3 +177,37 @@ describe("檔案庫", () => {
     expect(await store.get(id1)).toEqual(bytes);
   });
 });
+
+describe("代號與變動通知", () => {
+  it("每本筆記本有固定代號，複製到其他裝置後相同", () => {
+    const a = Notebook.create("x");
+    expect(a.id).toMatch(/^[0-9a-z]{16}$/);
+    expect(clone(a).id).toBe(a.id);
+    expect(Notebook.create("y").id).not.toBe(a.id);
+  });
+
+  it("頁面結構與筆跡的變動分開通知，並指出是哪一頁", () => {
+    const nb = Notebook.create("x");
+    const [p1, p2] = nb.insertPages(0, [pdfPage(0), pdfPage(1)]);
+    const pageEvents: number[] = [];
+    const strokeEvents: string[][] = [];
+    const off1 = nb.onPagesChange(() => pageEvents.push(1));
+    const off2 = nb.onStrokesChange((ids) => strokeEvents.push([...ids]));
+
+    nb.addStroke(p2, stroke(0));
+    expect(strokeEvents).toEqual([[p2]]);
+    expect(pageEvents).toEqual([]);
+
+    nb.movePage(p2, 0);
+    nb.insertPages(1, [lined]);
+    expect(pageEvents.length).toBeGreaterThanOrEqual(2);
+
+    nb.removeStrokes(p2, nb.strokes(p2).map((s) => s.id));
+    expect(strokeEvents.at(-1)).toEqual([p2]);
+    const count = strokeEvents.length;
+    off1();
+    off2();
+    nb.addStroke(p1, stroke(0));
+    expect(strokeEvents).toHaveLength(count); // 取消訂閱後不再通知
+  });
+});

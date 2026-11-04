@@ -12,6 +12,9 @@ import {
   type PageGroup,
   type PageSpec,
 } from "@tool/core";
+import { exportPdf, type BlobStore } from "@tool/notes";
+import { Notebook } from "@tool/notes/notebook";
+import * as Y from "yjs";
 
 export interface RawImage {
   data: ArrayBuffer;
@@ -23,10 +26,25 @@ export type WorkerRequest =
   | { op: "merge"; sources: { data: ArrayBuffer; name: string }[] }
   | { op: "split"; data: ArrayBuffer; name: string; groups: PageGroup[] }
   | { op: "rearrange"; data: ArrayBuffer; name: string; pages: PageSpec[] }
-  | { op: "images"; images: RawImage[]; options: ImagesToPdfOptions };
+  | { op: "images"; images: RawImage[]; options: ImagesToPdfOptions }
+  | { op: "putBlob"; blobId: string; data: ArrayBuffer }
+  | { op: "notebookPdf"; update: Uint8Array; ink: "none" | "flatten" | "annotations" };
+
+/**
+ * 筆記本用到的原始檔快取在 Worker 裡：同一個檔案只需要傳一次，
+ * 之後每次插頁、刪頁重新產生顯示用 PDF 時不必再複製一次大檔案。
+ */
+const blobCache = new Map<string, Uint8Array>();
+const workerBlobs: BlobStore = {
+  put: async () => {
+    throw new Error("not supported");
+  },
+  get: async (id) => blobCache.get(id),
+  has: async (id) => blobCache.has(id),
+};
 
 export type WorkerResponse =
-  | { id: number; ok: true; result: number | Uint8Array | Uint8Array[] }
+  | { id: number; ok: true; result: number | Uint8Array | Uint8Array[] | null }
   | { id: number; ok: false; message: string };
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -34,7 +52,7 @@ declare const self: DedicatedWorkerGlobalScope;
 self.onmessage = async (event: MessageEvent<WorkerRequest & { id: number }>) => {
   const { id, ...req } = event.data;
   try {
-    let result: number | Uint8Array | Uint8Array[];
+    let result: number | Uint8Array | Uint8Array[] | null;
     switch (req.op) {
       case "pageCount":
         result = await getPageCount(req.data, req.name);
@@ -51,15 +69,28 @@ self.onmessage = async (event: MessageEvent<WorkerRequest & { id: number }>) => 
       case "images":
         result = await imagesToPdf(await Promise.all(req.images.map(prepareImage)), req.options);
         break;
+      case "putBlob":
+        blobCache.set(req.blobId, new Uint8Array(req.data));
+        result = null;
+        break;
+      case "notebookPdf": {
+        const doc = new Y.Doc();
+        Y.applyUpdate(doc, req.update);
+        result = await exportPdf(new Notebook(doc), workerBlobs, { ink: req.ink });
+        doc.destroy();
+        break;
+      }
     }
     const transfer =
-      typeof result === "number"
+      typeof result === "number" || result === null
         ? []
         : (Array.isArray(result) ? result : [result]).map((r) => r.buffer as ArrayBuffer);
     self.postMessage({ id, ok: true, result } satisfies WorkerResponse, transfer);
   } catch (err) {
     const message =
-      err instanceof PdfToolError ? err.message : "處理時發生未預期的錯誤，請再試一次。";
+      err instanceof PdfToolError || (err instanceof Error && err.message.startsWith("找不到原始檔案"))
+        ? err.message
+        : "處理時發生未預期的錯誤，請再試一次。";
     if (!(err instanceof PdfToolError)) console.error(err);
     self.postMessage({ id, ok: false, message } satisfies WorkerResponse);
   }

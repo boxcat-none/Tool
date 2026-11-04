@@ -128,8 +128,35 @@ files/<sha256>     原始 PDF、圖片（不再壓縮）；只打包仍被頁面
 筆記本檔比方案 D 的 PDF（整頁 277 KB）小約 3 倍，因為只存筆跡資料，不存外觀。
 重現：`EXPORT_BENCH_OUT=輸出資料夾 pnpm --filter @tool/notes exec vitest run --dir bench --config /dev/null`
 
+## 自動儲存與書櫃（W4）
+
+程式：`apps/web/src/lib/library.ts`。網頁版與軟體版共用（軟體版的 WebView 也有 IndexedDB，存在程式資料夾）。
+
+```
+IndexedDB
+├─ guganote-library            書櫃
+│   ├─ notebooks               { id, title, createdAt, updatedAt, pageCount, sourceHash?, fileIds }
+│   └─ blobs                   SHA-256 → 原始 PDF、圖片（同一個檔案只存一份）
+└─ guganote-doc-<筆記本代號>    y-indexeddb：Yjs 文件；每個修改立即寫入，累積 500 筆後合併
+```
+
+- **開啟 PDF**：計算 SHA-256，書櫃裡已有用這份 PDF 建立的筆記本時，詢問要接續還是建立新的；
+  新筆記本的每一頁對應 PDF 的一頁（大小、旋轉取自 pdf.js）。
+- **開啟 `.guganote`**：書櫃裡已有同代號的筆記本時，把檔案內容合併進去（Yjs 合併，不會覆蓋）；否則加入書櫃。
+- **刪除筆記本**：一併刪除它的 Yjs 資料庫，以及不再被任何筆記本使用的原始檔。
+- 瀏覽器不允許 IndexedDB（部分私密瀏覽模式）時改用記憶體，畫面會提示無法自動儲存。
+- 第一次建立筆記本時呼叫 `navigator.storage.persist()`，請瀏覽器不要在空間不足時清掉資料。
+
+### 顯示
+
+pdf.js 一次只能顯示一份 PDF，所以：
+
+- 筆記本「原封不動就是一份 PDF」時，直接顯示原檔（保留目錄、有密碼時輸入密碼）。
+- 否則（插了紙張頁、刪頁、調整順序）在 Web Worker 裡用 `exportPdf(…, { ink: "none" })` 產生顯示用 PDF；
+  原始檔只會傳進 Worker 一次。頁面結構改變（含復原、之後其他裝置同步）時重新產生，並停在原本或新插入的頁。
+- 筆跡不畫進顯示用 PDF，由手寫層另外畫（才能即時編輯）。
+
 ## 後續
 
-- W4：自動儲存（網頁版 IndexedDB／軟體版檔案系統），開啟與儲存 `.guganote` 的介面。
 - W9–W11：同步（Yjs 更新訊息、awareness 即時筆跡、檔案庫傳輸）。
 - 圖片（W12）：新增 `images` Y.Map（pageId → 位置、大小、fileId）。

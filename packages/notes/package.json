@@ -7,7 +7,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./notebook": "./src/notebook.ts",
-    "./blobs": "./src/blobs.ts"
+    "./blobs": "./src/blobs.ts",
+    "./file": "./src/file.ts"
   },
   "scripts": {
     "test": "vitest run",
