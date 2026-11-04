@@ -107,3 +107,36 @@
 /* 疊加層裡的提示框維持正常文字顏色（疊加層本身是灰色的「開啟中…」） */
 .reader__overlay .notice { color: var(--text); }
 .reader__overlay .notice .note--error { color: var(--danger); }
+
+/* ── 手寫工具列 ── */
+.ink-toolbar {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 4px 12px; background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.ink-toolbar__group { display: inline-flex; align-items: center; gap: 4px; }
+.ink-toolbar__sep { width: 1px; height: 22px; background: var(--border); margin: 0 4px; }
+.ink-toolbar__check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-2); margin-left: 6px; cursor: pointer; }
+.ink-toolbar__export { padding: 5px 12px; }
+.swatch {
+  width: 22px; height: 22px; border-radius: 50%; cursor: pointer; padding: 0;
+  border: 2px solid var(--surface); box-shadow: 0 0 0 1px var(--border);
+}
+.swatch--on { box-shadow: 0 0 0 2px var(--accent); }
+.swatch--custom {
+  display: inline-block; position: relative; overflow: hidden;
+  background: conic-gradient(#ef4444, #f59e0b, #22c55e, #3b82f6, #a855f7, #ef4444);
+}
+.swatch--custom input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+.size-dot { display: inline-grid; place-items: center; }
+.size-dot span { border-radius: 50%; display: block; }
+.reader__toast--error { background: var(--danger); color: #fff; white-space: normal; max-width: calc(100% - 32px); }
+
+/* ── 手寫層（掛在 pdf.js 的每一頁裡） ── */
+.ink-layer { position: absolute; inset: 0; pointer-events: none; }
+.ink-layer canvas, .ink-input__live { position: absolute; inset: 0; width: 100%; height: 100%; }
+/* 螢光筆和頁面相乘：底下的字還看得到 */
+.ink-layer__highlight, .ink-input__live--highlighter { mix-blend-mode: multiply; }
+.ink-input { position: absolute; inset: 0; z-index: 10; touch-action: none; }
+.ink-input__live { pointer-events: none; }
+.ink-input[data-tool="pen"], .ink-input[data-tool="highlighter"] { cursor: crosshair; }
+.ink-input[data-tool="eraser"] { cursor: none; }

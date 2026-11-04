@@ -1,4 +1,4 @@
-import { decodeStroke, encodeStroke, normalizeStroke, type Stroke } from "@tool/core/ink";
+import { decodeStroke, encodeStroke, normalizeStroke, type Stroke } from "@tool/core/ink/core";
 import { generateKeyBetween } from "fractional-indexing";
 import * as Y from "yjs";
 import type { FileInfo, NewPage, PageInfo, PageSource } from "./types";

@@ -5,7 +5,9 @@
   "type": "module",
   "main": "./src/index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./notebook": "./src/notebook.ts",
+    "./blobs": "./src/blobs.ts"
   },
   "scripts": {
     "test": "vitest run",
