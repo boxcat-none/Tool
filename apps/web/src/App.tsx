@@ -32,10 +32,11 @@ const Reader = lazy(() => import("./reader/Reader"));
 
 type Route = { mode: "reader" } | { mode: "tools"; tool: ToolId };
 
+/** 預設進入「閱讀與筆記」；網址是工具代號（例如 #merge）時進入該工具 */
 function currentRoute(): Route {
   const hash = location.hash.slice(1);
-  if (hash === "reader") return { mode: "reader" };
-  return { mode: "tools", tool: TOOLS.some((t) => t.id === hash) ? (hash as ToolId) : "merge" };
+  if (TOOLS.some((t) => t.id === hash)) return { mode: "tools", tool: hash as ToolId };
+  return { mode: "reader" };
 }
 
 export function App() {
