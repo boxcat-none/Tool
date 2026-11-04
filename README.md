@@ -1,6 +1,6 @@
 # Tool
 
-文件處理工具箱。所有處理都在使用者的電腦上完成，檔案不會上傳。
+文件處理工具箱，有網頁版和軟體版（Windows、macOS、Linux）。所有處理都在使用者的電腦上完成，檔案不會上傳。
 
 目前功能：
 
@@ -9,6 +9,9 @@
 - **整理頁面**：用縮圖旋轉、刪除頁面，或拖拉調整順序；可以多選後一次處理
 - **JPG/PNG 轉 PDF**：JPG、PNG（以及 WebP、GIF 等）圖片合成一個 PDF，可選 A4 / Letter / 與圖片相同大小、方向與邊界；手機照片會依 EXIF 自動轉正
 - **PDF 轉 JPG/PNG**：每頁轉成一張圖片，可選格式、解析度（72 / 150 / 300 DPI）、JPG 品質與要轉的頁面；多張圖片打包成 ZIP
+- **Office 轉 PDF**（僅軟體版）：Word、Excel、PowerPoint 及 OpenDocument 檔案轉成 PDF，需要另外安裝免費的 [LibreOffice](https://www.libreoffice.org/download/download-libreoffice/)
+
+軟體版和網頁版功能相同（另外多了 Office 轉 PDF），差別在存檔：軟體版會跳出「另存新檔」或「選擇資料夾」對話框，直接存到硬碟，不會打包成 ZIP。
 
 ## 開發
 
@@ -22,14 +25,24 @@ pnpm typecheck   # TypeScript 型別檢查
 pnpm build       # 建置網頁版到 apps/web/dist
 ```
 
+軟體版另外需要 [Rust](https://rustup.rs/) 和 [Tauri 的系統套件](https://tauri.app/start/prerequisites/)：
+
+```bash
+pnpm --filter @tool/desktop dev     # 開發模式啟動軟體版
+pnpm --filter @tool/desktop build   # 打包本機作業系統的安裝檔
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml   # Rust 測試（有裝 LibreOffice 時會實際轉檔）
+```
+
 ## 專案結構
 
 ```
 packages/core/   PDF 處理邏輯（合併、分割、整理頁面、圖片與 PDF 互轉的計算），不依賴 UI，網頁版和軟體版共用
-apps/web/        網頁版（React + Vite），PDF 處理在 Web Worker 裡執行，縮圖與 PDF 轉圖片用 pdf.js
+apps/web/        介面（React + Vite），網頁版和軟體版共用；PDF 處理在 Web Worker 裡執行，縮圖與 PDF 轉圖片用 pdf.js
+apps/desktop/    軟體版（Tauri）：載入 apps/web 的介面，Rust 端負責存檔、呼叫 LibreOffice 轉檔
 ```
 
-`apps/web/src/lib/platform.ts` 是平台層：網頁版用瀏覽器下載，之後的軟體版（Tauri）只要替換這一層，就能改成原生的存檔對話框。
+`apps/web/src/lib/platform.ts` 是平台層：偵測到在 Tauri 裡執行時，存檔改用原生對話框；
+軟體版專用的功能都在 `apps/web/src/lib/desktop.ts`，網頁版不會載入。
 
 ## 部署
 
@@ -38,6 +51,16 @@ apps/web/        網頁版（React + Vite），PDF 處理在 Web Worker 裡執�
 
 第一次使用前，需要在 GitHub 的 repo 設定開啟 Pages：
 **Settings → Pages → Build and deployment → Source** 選 **GitHub Actions**。
+
+### 軟體版安裝檔
+
+`.github/workflows/desktop.yml` 會打包 Windows（.msi、.exe）、macOS（.dmg，Intel 與 Apple 晶片通用）、Linux（.deb、.rpm、.AppImage）：
+
+- **手動執行**（GitHub → Actions → 軟體版 → Run workflow）：安裝檔放在該次執行的 Artifacts
+- **推送標籤**（例如 `git tag v0.1.0 && git push origin v0.1.0`）：另外建立草稿版 Release
+
+安裝檔目前沒有程式碼簽章：Windows 會出現 SmartScreen 警告（點「其他資訊 → 仍要執行」）；
+macOS 若顯示「已損毀」，請執行 `xattr -cr "/Applications/PDF Toolbox.app"`。
 
 ## 頁碼範圍語法
 

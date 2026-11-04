@@ -75,16 +75,11 @@ export function ToImagesTool() {
       });
       const zipName = `${baseName(source.file.name)}_${format.toUpperCase()}.zip`;
       setStatus({ kind: "busy", text: "打包中…" });
-      await platform.saveFiles(files, zipName);
+      const saved = await platform.saveFiles(files, zipName);
+      if (!saved) return setStatus({ kind: "idle" });
       const total = files.reduce((s, f) => s + f.data.byteLength, 0);
       const note = clampedCount > 0 ? `其中 ${clampedCount} 頁太大，已自動降低解析度。` : "";
-      setStatus({
-        kind: "done",
-        text:
-          (files.length === 1
-            ? `完成！已下載「${files[0].name}」（${formatBytes(total)}）。`
-            : `完成！已將 ${files.length} 張圖片打包成「${zipName}」下載（${formatBytes(total)}）。`) + note,
-      });
+      setStatus({ kind: "done", text: `完成！${saved}（${formatBytes(total)}）。${note}` });
     } catch (e) {
       setStatus({ kind: "error", text: (e as Error).message });
     }

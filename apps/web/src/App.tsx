@@ -1,19 +1,31 @@
 import { useEffect, useState } from "react";
+import { isDesktop } from "./lib/desktop";
 import { ImagesTool } from "./tools/ImagesTool";
 import { MergeTool } from "./tools/MergeTool";
+import { OfficeTool } from "./tools/OfficeTool";
 import { OrganizeTool } from "./tools/OrganizeTool";
 import { SplitTool } from "./tools/SplitTool";
 import { ToImagesTool } from "./tools/ToImagesTool";
 
-const TOOLS = [
+const ALL_TOOLS = [
   { id: "merge", label: "合併 PDF", desc: "把多個 PDF 依順序合成一個", Component: MergeTool },
   { id: "split", label: "分割 PDF", desc: "把一個 PDF 拆成多個，或擷取部分頁面", Component: SplitTool },
   { id: "organize", label: "整理頁面", desc: "旋轉、刪除頁面，或拖拉調整頁面順序", Component: OrganizeTool },
   { id: "images", label: "JPG/PNG 轉 PDF", desc: "把多張 JPG、PNG 等圖片合成一個 PDF，每張圖片一頁", Component: ImagesTool },
   { id: "to-images", label: "PDF 轉 JPG/PNG", desc: "把 PDF 的每一頁轉成 PNG 或 JPG 圖片", Component: ToImagesTool },
+  {
+    id: "office",
+    label: "Office 轉 PDF",
+    desc: "把 Word、Excel、PowerPoint 檔案轉成 PDF（需要安裝 LibreOffice）",
+    Component: OfficeTool,
+    desktopOnly: true,
+  },
 ] as const;
 
-type ToolId = (typeof TOOLS)[number]["id"];
+/** Office 轉 PDF 需要 LibreOffice，只有軟體版提供 */
+const TOOLS = ALL_TOOLS.filter((t) => isDesktop || !("desktopOnly" in t));
+
+type ToolId = (typeof ALL_TOOLS)[number]["id"];
 
 function initialTool(): ToolId {
   const hash = location.hash.slice(1);
@@ -45,7 +57,7 @@ export function App() {
         </div>
         <p className="privacy">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.5 3 8.5 7 10 4-1.5 7-5.5 7-10V6l-7-3Z" /></svg>
-          所有處理都在你的瀏覽器完成，檔案不會上傳
+          {isDesktop ? "所有處理都在你的電腦上完成，檔案不會上傳" : "所有處理都在你的瀏覽器完成，檔案不會上傳"}
         </p>
       </header>
 

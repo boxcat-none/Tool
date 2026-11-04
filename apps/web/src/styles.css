@@ -52,7 +52,7 @@ body {
 button, input { font: inherit; color: inherit; }
 
 .app {
-  max-width: 760px;
+  max-width: 900px;
   margin: 0 auto;
   padding: 24px 16px 64px;
 }
@@ -166,6 +166,27 @@ button, input { font: inherit; color: inherit; }
   flex: none; width: 40px; height: 40px; border-radius: 6px;
   object-fit: cover; background: var(--surface);
 }
+
+.file--done .file__meta { color: var(--success); }
+.file__badge {
+  flex: none; width: 30px; height: 30px; border-radius: 6px;
+  display: grid; place-items: center;
+  color: #fff; font-weight: 700; font-size: 14px;
+}
+.file__badge--word { background: #2b579a; }
+.file__badge--excel { background: #217346; }
+.file__badge--ppt { background: #c43e1c; }
+.file__badge--other { background: var(--text-2); }
+.file__actions .spinner { margin: 0 6px; }
+
+/* ── Notice ─────────────────────────────── */
+.notice {
+  padding: 20px; border-radius: var(--radius);
+  background: var(--accent-soft); border: 1px solid var(--border);
+}
+.notice__title { font-weight: 700; font-size: 16px; }
+.notice p { margin: 6px 0 16px; color: var(--text-2); }
+.notice__actions { display: flex; flex-wrap: wrap; gap: 10px; }
 
 /* ── Buttons & toolbar ──────────────────── */
 .btn {

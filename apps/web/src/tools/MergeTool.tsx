@@ -60,8 +60,9 @@ export function MergeTool() {
     try {
       const data = await pdf.merge(items.map((it) => it.file));
       const name = ensurePdfName(outName, "合併");
-      await platform.saveFile({ name, data });
-      setStatus({ kind: "done", text: `完成！已下載「${name}」，共 ${totalPages} 頁（${formatBytes(data.byteLength)}）。` });
+      const saved = await platform.saveFile({ name, data });
+      if (!saved) return setStatus({ kind: "idle" });
+      setStatus({ kind: "done", text: `完成！${saved}，共 ${totalPages} 頁（${formatBytes(data.byteLength)}）。` });
     } catch (e) {
       setStatus({ kind: "error", text: (e as Error).message });
     }

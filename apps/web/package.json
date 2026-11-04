@@ -10,6 +10,9 @@
     "typecheck": "tsc -p ."
   },
   "dependencies": {
+    "@tauri-apps/api": "2.12.4",
+    "@tauri-apps/plugin-dialog": "2.8.3",
+    "@tauri-apps/plugin-opener": "2.7.2",
     "@tool/core": "workspace:*",
     "fflate": "0.8.3",
     "pdfjs-dist": "6.4.299",

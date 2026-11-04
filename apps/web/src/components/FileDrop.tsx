@@ -8,6 +8,8 @@ interface Props {
   compact?: boolean;
   /** 檔案選擇器接受的類型，預設 PDF */
   accept?: string;
+  /** 點擊時改用自訂的選檔方式（軟體版用原生對話框，才拿得到檔案路徑） */
+  onPick?: () => void;
 }
 
 /** 拖放或點擊選擇 PDF 檔案。 */
@@ -18,8 +20,10 @@ export function FileDrop({
   hint,
   compact = false,
   accept = "application/pdf,.pdf",
+  onPick,
 }: Props) {
   const input = useRef<HTMLInputElement>(null);
+  const open = () => (onPick ? onPick() : input.current?.click());
   const [over, setOver] = useState(false);
 
   const handleDrop = (e: DragEvent) => {
@@ -40,13 +44,13 @@ export function FileDrop({
       }}
       onDragLeave={() => setOver(false)}
       onDrop={handleDrop}
-      onClick={() => input.current?.click()}
+      onClick={open}
       role="button"
       tabIndex={0}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          input.current?.click();
+          open();
         }
       }}
     >

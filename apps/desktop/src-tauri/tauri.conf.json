@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "PDF Toolbox",
+  "mainBinaryName": "pdf-toolbox",
+  "version": "0.1.0",
+  "identifier": "io.github.boxcat-none.tool",
+  "build": {
+    "frontendDist": "../../web/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "pnpm --filter @tool/web dev",
+    "beforeBuildCommand": "pnpm --filter @tool/web build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "PDF 工具箱",
+        "width": 1000,
+        "height": 780,
+        "minWidth": 420,
+        "minHeight": 500,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' ipc: http://ipc.localhost; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost blob: data:; font-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "shortDescription": "PDF 合併、分割、轉檔工具",
+    "longDescription": "PDF 合併、分割、整理頁面、圖片與 PDF 互轉，以及 Word、Excel、PowerPoint 轉 PDF。所有處理都在本機完成。",
+    "category": "Productivity"
+  }
+}

@@ -116,8 +116,9 @@ export function OrganizeTool() {
         kept.map((p) => ({ index: p.index, rotate: p.rotate })),
       );
       const name = `${baseName(source.file.name)}_已整理.pdf`;
-      await platform.saveFile({ name, data });
-      setStatus({ kind: "done", text: `完成！已下載「${name}」，共 ${kept.length} 頁（${formatBytes(data.byteLength)}）。` });
+      const saved = await platform.saveFile({ name, data });
+      if (!saved) return setStatus({ kind: "idle" });
+      setStatus({ kind: "done", text: `完成！${saved}，共 ${kept.length} 頁（${formatBytes(data.byteLength)}）。` });
     } catch (e) {
       setStatus({ kind: "error", text: (e as Error).message });
     }

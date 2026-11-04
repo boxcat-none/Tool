@@ -83,15 +83,10 @@ export function SplitTool() {
         name: mode === "extract" ? `${base}_擷取.pdf` : `${base}_p${describeGroup(groups[i]).replace(/,/g, "_")}.pdf`,
         data,
       }));
-      await platform.saveFiles(files, `${base}_分割.zip`);
+      const saved = await platform.saveFiles(files, `${base}_分割.zip`);
+      if (!saved) return setStatus({ kind: "idle" });
       const total = outputs.reduce((s, o) => s + o.byteLength, 0);
-      setStatus({
-        kind: "done",
-        text:
-          files.length === 1
-            ? `完成！已下載「${files[0].name}」（${formatBytes(total)}）。`
-            : `完成！已將 ${files.length} 個檔案打包成「${base}_分割.zip」下載（${formatBytes(total)}）。`,
-      });
+      setStatus({ kind: "done", text: `完成！${saved}（${formatBytes(total)}）。` });
     } catch (e) {
       setStatus({ kind: "error", text: (e as Error).message });
     }
