@@ -1,0 +1,41 @@
+/* ── 閱讀器 ─────────────────────────────── */
+.reader {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+}
+.reader__toolbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 12px;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.reader__title { font-weight: 600; min-width: 0; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reader__spacer { flex: 1; }
+.reader__group { display: inline-flex; align-items: center; gap: 2px; padding: 0 4px; }
+.reader__page {
+  width: 3.2em; text-align: center; padding: 4px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface);
+}
+.reader__count, .reader__percent { color: var(--text-2); font-size: 14px; white-space: nowrap; }
+.reader__percent { min-width: 3.2em; text-align: right; }
+.reader__zoom { border: 1px solid var(--border); border-radius: 6px; padding: 4px; background: var(--surface); color: var(--text); }
+
+.reader__body { position: relative; flex: 1; min-height: 0; background: var(--surface-2); }
+/* pdf.js 的閱讀器要求捲動容器是 absolute 定位 */
+.reader__scroll { position: absolute; inset: 0; overflow: auto; }
+.reader__scroll .pdfViewer { padding: 12px 0 40px; }
+.reader__scroll .pdfViewer .page { box-shadow: 0 1px 4px rgb(0 0 0 / 0.18); border: 0; margin: 12px auto; }
+.reader__overlay {
+  position: absolute; inset: 0; display: grid; place-items: center; gap: 8px;
+  color: var(--text-2);
+}
+
+.reader-empty { flex: 1; display: grid; place-items: start center; padding: 24px 16px; overflow: auto; }
+.reader-empty__inner {
+  width: 100%; max-width: 640px; display: flex; flex-direction: column; gap: 12px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px;
+}
+
+@media (max-width: 520px) {
+  .reader__title { max-width: 30vw; }
+  .reader__zoom { display: none; }
+}
