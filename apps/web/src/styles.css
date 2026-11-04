@@ -73,6 +73,25 @@ button, input { font: inherit; color: inherit; }
 }
 .privacy svg { width: 16px; height: 16px; fill: none; stroke: var(--success); stroke-width: 2; stroke-linejoin: round; }
 
+/* ── 功能切換（閱讀與筆記／PDF 工具） ─────── */
+.mode-switch { display: inline-flex; gap: 2px; padding: 3px; background: var(--surface-2); border-radius: 9px; }
+.mode-btn {
+  border: 0; background: transparent; cursor: pointer;
+  padding: 5px 14px; border-radius: 7px; color: var(--text-2); font-weight: 600; font-size: 14px;
+}
+.mode-btn:hover { color: var(--text); }
+.mode-btn--active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+
+/* 閱讀模式：滿版 */
+.app--reader {
+  max-width: none; height: 100vh; height: 100dvh; padding: 0;
+  display: flex; flex-direction: column;
+}
+.app--reader .header { margin: 0; padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.app--reader .privacy { display: none; }
+.reader-host { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.reader-host[hidden] { display: none; }
+
 /* ── Tabs ───────────────────────────────── */
 .tabs {
   display: inline-flex;

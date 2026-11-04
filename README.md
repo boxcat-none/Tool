@@ -4,6 +4,8 @@
 
 目前功能：
 
+- **閱讀器**（製作中）：連續捲動、翻頁、縮放、選取文字；沒有內嵌字型的中文 PDF 也能正常顯示。手寫筆記功能依排程開發中（見 `docs/`）
+
 - **合併 PDF**：多個 PDF 依順序合成一個，可以拖拉或用按鈕調整順序
 - **分割 PDF**：依範圍分割、每頁一個檔案、每 N 頁一份、擷取頁面合成單一檔案
 - **整理頁面**：用縮圖旋轉、刪除頁面，或拖拉調整順序；可以多選後一次處理
@@ -36,6 +38,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml   # Rust 測試（�
 ## 專案結構
 
 ```
+packages/notes/  筆記本資料模型（Yjs），支援多裝置同時編輯
 packages/core/   PDF 處理邏輯（合併、分割、整理頁面、圖片與 PDF 互轉的計算），不依賴 UI，網頁版和軟體版共用
 apps/web/        介面（React + Vite），網頁版和軟體版共用；PDF 處理在 Web Worker 裡執行，縮圖與 PDF 轉圖片用 pdf.js
 apps/desktop/    軟體版（Tauri）：載入 apps/web 的介面，Rust 端負責存檔、呼叫 LibreOffice 轉檔
