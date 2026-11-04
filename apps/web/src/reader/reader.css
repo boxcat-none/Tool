@@ -215,3 +215,11 @@
   .reader__saved { display: none; }
   .reader__insert { padding: 5px 8px; }
 }
+
+/* ── 觸控與觸控筆（iPad） ── */
+/* 畫筆模式：整個閱讀器不能選取文字、沒有長按選單，避免 Apple Pencil 拖曳時反白 */
+.reader--drawing, .reader--drawing * { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.reader--drawing input, .reader--drawing select { -webkit-user-select: text; user-select: text; }
+.ink-input { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+/* 閱讀器裡由程式處理兩指縮放，瀏覽器只負責捲動 */
+.reader__scroll { touch-action: pan-x pan-y; }

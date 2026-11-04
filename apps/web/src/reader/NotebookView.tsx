@@ -9,6 +9,7 @@ import { loadPdfViewer, openPdf, type OpenedPdf } from "../lib/pdfjs";
 import { platform } from "../lib/platform";
 import { loadPosition, loadPref, savePosition, savePref } from "../lib/readingPosition";
 import { createThumbnailer, type ThumbnailDoc } from "../lib/thumbnails";
+import { attachTouchGestures } from "./gestures";
 import { InkController, paintStrokes, type InkSettings } from "./ink";
 import { HIGHLIGHTER_COLORS, HIGHLIGHTER_SIZES, InkToolbar, PEN_COLORS, PEN_SIZES } from "./InkToolbar";
 import { PasswordForm } from "./PasswordForm";
@@ -242,12 +243,18 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
       };
       container.addEventListener("click", onLinkClick, true);
 
+      // 觸控：兩指縮放與平移（iPad）；兩指放下時，手指正在畫的那一筆作廢
+      const offGestures = attachTouchGestures(container, () => (viewer.pdfDocument ? viewer : undefined), {
+        onPinchStart: () => inkCtl.current?.cancelTouchStroke(),
+      });
+
       parts.current = { viewer, linkService, findController, eventBus } as unknown as ViewerParts;
       setViewerReady(true);
       cleanup = () => {
         window.clearTimeout(saveTimer);
         ro.disconnect();
         container.removeEventListener("click", onLinkClick, true);
+        offGestures();
         findController.setDocument(null as never);
         viewer.setDocument(null as never);
         linkService.setDocument(null);
@@ -653,7 +660,11 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
     const onKey = (e: KeyboardEvent) => {
       if (!scrollRef.current?.offsetParent || status.kind !== "ready") return;
       const mod = e.ctrlKey || e.metaKey;
-      const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement;
+      // 只有文字輸入框（頁碼、搜尋、標題）才算「正在打字」；勾選框、按鈕不影響快捷鍵
+      const typing =
+        (e.target instanceof HTMLInputElement && !["checkbox", "radio", "button", "color"].includes(e.target.type)) ||
+        e.target instanceof HTMLTextAreaElement ||
+        e.target instanceof HTMLSelectElement;
       if (mod && (e.key === "f" || e.key === "F")) {
         e.preventDefault();
         openSearch();
@@ -697,7 +708,7 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
   const ready = status.kind === "ready";
 
   return (
-    <div className="reader">
+    <div className={`reader${ink.tool !== "read" ? " reader--drawing" : ""}`}>
       <div className="reader__toolbar" role="toolbar" aria-label="閱讀器工具列">
         <button type="button" className="icon" aria-label="回到書櫃" title="回到書櫃" onClick={close}>
           <svg className="icon__svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7" /></svg>
