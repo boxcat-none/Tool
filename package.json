@@ -1,0 +1,18 @@
+{
+  "name": "tool",
+  "private": true,
+  "description": "文件處理工具箱：PDF 合併、分割等，網頁版與軟體版共用核心",
+  "packageManager": "pnpm@10.28.0",
+  "scripts": {
+    "dev": "pnpm --filter @tool/web dev",
+    "build": "pnpm --filter @tool/web build",
+    "preview": "pnpm --filter @tool/web preview",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}
