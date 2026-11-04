@@ -1,4 +1,4 @@
-import type { InkPoint } from "./types";
+import type { InkPoint, Stroke } from "./types";
 
 /**
  * Ramer–Douglas–Peucker 點精簡：在誤差 `tolerance`（pt）以內刪掉多餘的點。
@@ -39,4 +39,17 @@ function distanceToSegment(p: InkPoint, a: InkPoint, b: InkPoint, w: number): nu
   t = Math.max(0, Math.min(1, t));
   const ex = ax + t * dx - p[0], ey = ay + t * dy - p[1], ez = az + t * dz - p[2] * w;
   return Math.sqrt(ex * ex + ey * ey + ez * ez);
+}
+
+/** 筆畫存檔前的標準化：點精簡（預設 0.15 pt），座標取到 0.1 pt、筆壓取到 1/255。
+ *  落筆後就做一次，確保「寫的時候看到的」和「存檔再打開看到的」完全一致。 */
+export function normalizeStroke(stroke: Stroke, tolerance = 0.15): Stroke {
+  return {
+    ...stroke,
+    points: simplifyPoints(stroke.points, tolerance).map(([x, y, p]) => [
+      Math.round(x * 10) / 10,
+      Math.round(y * 10) / 10,
+      Math.round(Math.max(0, Math.min(1, p)) * 255) / 255,
+    ]),
+  };
 }

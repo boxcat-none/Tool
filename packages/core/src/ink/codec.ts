@@ -81,27 +81,36 @@ export function encodeStrokes(strokes: Stroke[]): Uint8Array {
   MAGIC.forEach((b) => w.u8(b));
   w.u8(VERSION);
   w.varint(strokes.length);
-  for (const s of strokes) {
-    w.u8(Math.max(0, TOOLS.indexOf(s.tool)));
-    const [r, g, b] = parseColor(s.color);
-    w.u8(r);
-    w.u8(g);
-    w.u8(b);
-    w.varint(Math.round(s.size * 10));
-    w.varint(s.points.length);
-    let px = 0;
-    let py = 0;
-    for (const [x, y, p] of s.points) {
-      const qx = Math.round(x * COORD_SCALE);
-      const qy = Math.round(y * COORD_SCALE);
-      w.zigzag(qx - px);
-      w.zigzag(qy - py);
-      w.u8(Math.round(Math.max(0, Math.min(1, p)) * 255));
-      px = qx;
-      py = qy;
-    }
-  }
+  for (const s of strokes) writeStroke(w, s);
   return w.bytes();
+}
+
+/** 單一筆畫的編碼（不含檔頭），用於同步資料：每一筆各自存放 */
+export function encodeStroke(stroke: Stroke): Uint8Array {
+  const w = new Writer();
+  writeStroke(w, stroke);
+  return w.bytes();
+}
+
+function writeStroke(w: Writer, s: Stroke) {
+  w.u8(Math.max(0, TOOLS.indexOf(s.tool)));
+  const [r, g, b] = parseColor(s.color);
+  w.u8(r);
+  w.u8(g);
+  w.u8(b);
+  w.varint(Math.round(s.size * 10));
+  w.varint(s.points.length);
+  let px = 0;
+  let py = 0;
+  for (const [x, y, p] of s.points) {
+    const qx = Math.round(x * COORD_SCALE);
+    const qy = Math.round(y * COORD_SCALE);
+    w.zigzag(qx - px);
+    w.zigzag(qy - py);
+    w.u8(Math.round(Math.max(0, Math.min(1, p)) * 255));
+    px = qx;
+    py = qy;
+  }
 }
 
 export function decodeStrokes(bytes: Uint8Array): Stroke[] {
@@ -111,22 +120,28 @@ export function decodeStrokes(bytes: Uint8Array): Stroke[] {
   if (version !== VERSION) throw new Error(`不支援的筆跡資料版本：${version}`);
   const count = r.varint();
   const strokes: Stroke[] = [];
-  for (let i = 0; i < count; i++) {
-    const tool = TOOLS[r.u8()] ?? "pen";
-    const color = toHex(r.u8(), r.u8(), r.u8());
-    const size = r.varint() / 10;
-    const n = r.varint();
-    const points: Stroke["points"] = [];
-    let x = 0;
-    let y = 0;
-    for (let j = 0; j < n; j++) {
-      x += r.zigzag();
-      y += r.zigzag();
-      points.push([x / COORD_SCALE, y / COORD_SCALE, r.u8() / 255]);
-    }
-    strokes.push({ tool, color, size, points });
-  }
+  for (let i = 0; i < count; i++) strokes.push(readStroke(r));
   return strokes;
+}
+
+export function decodeStroke(bytes: Uint8Array): Stroke {
+  return readStroke(new Reader(bytes));
+}
+
+function readStroke(r: Reader): Stroke {
+  const tool = TOOLS[r.u8()] ?? "pen";
+  const color = toHex(r.u8(), r.u8(), r.u8());
+  const size = r.varint() / 10;
+  const n = r.varint();
+  const points: Stroke["points"] = [];
+  let x = 0;
+  let y = 0;
+  for (let j = 0; j < n; j++) {
+    x += r.zigzag();
+    y += r.zigzag();
+    points.push([x / COORD_SCALE, y / COORD_SCALE, r.u8() / 255]);
+  }
+  return { tool, color, size, points };
 }
 
 export function parseColor(hex: string): [number, number, number] {

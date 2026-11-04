@@ -9,7 +9,7 @@ import {
 } from "pdf-lib";
 import { decodeStrokes, encodeStrokes, parseColor } from "./codec";
 import { outlineBounds, strokeOutline } from "./outline";
-import { simplifyPoints } from "./simplify";
+import { normalizeStroke, simplifyPoints } from "./simplify";
 import type { Stroke } from "./types";
 
 /** 我們自訂的註解欄位：存放可編輯的原始筆跡資料。其他 PDF 軟體會忽略這個欄位。 */
@@ -53,7 +53,7 @@ export function writeInk(doc: PDFDocument, ink: Map<number, Stroke[]>, options: 
     // 原始資料先精簡、四捨五入到 0.1 pt，外觀也由精簡後的資料產生，
     // 確保「存檔前看到的」和「重新打開後看到的」完全一致
     const prepared = strokes
-      .map((s) => ({ ...s, points: simplifyPoints(s.points, simplifyTolerance).map(roundPoint) }))
+      .map((s) => normalizeStroke(s, simplifyTolerance))
       .filter((s) => s.points.length > 0);
 
     const groups = new Map<string, Stroke[]>();
@@ -187,10 +187,6 @@ function* inkAnnotations(doc: PDFDocument) {
       yield { pageIndex, annots, ref, dict };
     }
   }
-}
-
-function roundPoint([x, y, p]: Stroke["points"][number]): Stroke["points"][number] {
-  return [round(x, 1), round(y, 1), Math.round(p * 255) / 255];
 }
 
 function round(v: number, digits: number): number {
