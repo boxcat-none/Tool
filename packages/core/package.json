@@ -18,6 +18,7 @@
     "bench:ink": "INK_BENCH_OUT=${INK_BENCH_OUT:-bench/out} vitest run --dir bench"
   },
   "dependencies": {
+    "fflate": "0.8.3",
     "pdf-lib": "1.17.1",
     "perfect-freehand": "1.2.3"
   },

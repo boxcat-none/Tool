@@ -8,5 +8,6 @@ export {
 } from "./file";
 export { Notebook, SCHEMA_VERSION, type StrokeEntry } from "./notebook";
 export { PAPER_LABELS, paperContent } from "./paper";
+export { readOutline, writeOutline, type OutlineItem } from "./outline";
 export { exportPdf, importPdf, type ExportOptions } from "./pdf";
 export type { FileInfo, NewPage, PageInfo, PageSource, PaperTemplate } from "./types";

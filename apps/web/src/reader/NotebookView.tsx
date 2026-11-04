@@ -431,12 +431,9 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
       setThumbVersions({});
       setStatus({ kind: "ready" });
 
-      if (display.plain) {
-        const raw = await opened.doc.getOutline().catch(() => null);
-        if (!cancelled) setOutline(raw ? raw.map(toNode) : []);
-      } else {
-        setOutline([]);
-      }
+      // 顯示用 PDF 由筆記本產生時，目錄已經對應到新頁碼（見 notes/outline.ts）
+      const raw = await opened.doc.getOutline().catch(() => null);
+      if (!cancelled) setOutline(raw ? raw.map(toNode) : []);
     })();
     return () => {
       cancelled = true;
@@ -853,7 +850,7 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
                 {outline === null ? (
                   <p className="note">讀取中…</p>
                 ) : outline.length === 0 ? (
-                  <p className="note">{display?.plain ? "這份文件沒有目錄（書籤）。" : "插入或調整頁面後，目錄暫時無法顯示。"}</p>
+                  <p className="note">這份文件沒有目錄（書籤）。</p>
                 ) : (
                   <OutlineTree
                     nodes={outline}
