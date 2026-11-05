@@ -1,4 +1,4 @@
-import type { ImageInfo, ImagePatch, Notebook } from "@tool/notes/notebook";
+import { imagePlacement, multiplyMatrix, type ImageInfo, type ImagePatch, type Notebook } from "@tool/notes/notebook";
 
 /**
  * 頁面上的圖片（每頁一個 PageImages）。
@@ -43,6 +43,8 @@ export class PageImages {
   private imgs = new Map<string, HTMLImageElement>();
   /** 拖曳中的暫時位置 */
   private preview: { id: string; rect: Rect } | null = null;
+  /** 套索選取一起移動時的暫時位移 */
+  private group: { ids: Set<string>; dx: number; dy: number } | null = null;
   private drag: {
     id: string;
     pointerId: number;
@@ -63,11 +65,27 @@ export class PageImages {
     this.overlay.innerHTML =
       '<span class="image-select__handle" data-corner="0"></span><span class="image-select__handle" data-corner="1"></span>' +
       '<span class="image-select__handle" data-corner="2"></span><span class="image-select__handle" data-corner="3"></span>' +
-      '<button type="button" class="image-select__delete">刪除</button>';
-    const del = this.overlay.querySelector("button")!;
-    // 刪除鈕：不要讓輸入層把這次點擊當成「點到空白處、取消選取」
-    del.addEventListener("pointerdown", (e) => e.stopPropagation());
-    del.addEventListener("click", () => this.deleteSelected());
+      '<span class="image-select__actions"><button type="button" data-action="rotate">旋轉</button>' +
+      '<button type="button" data-action="delete" class="image-select__danger">刪除</button></span>';
+    for (const btn of this.overlay.querySelectorAll("button")) {
+      // 按鈕：不要讓輸入層把這次點擊當成「點到空白處、取消選取」
+      btn.addEventListener("pointerdown", (e) => e.stopPropagation());
+      btn.addEventListener("click", () => (btn.dataset.action === "rotate" ? this.rotateSelected() : this.deleteSelected()));
+    }
+  }
+
+  /** 把選取的圖片順時針轉 90 度（以中心為準，框的寬高對調） */
+  rotateSelected() {
+    const id = this.host.selected();
+    const info = id ? this.host.nb.getImage(id) : undefined;
+    if (!id || !info) return;
+    const cx = info.x + info.width / 2;
+    const cy = info.y + info.height / 2;
+    const rotation = ((info.rotation + 90) % 360) as ImageInfo["rotation"];
+    this.host.nb.doc.transact(
+      () => this.host.nb.updateImage(id, { rotation, x: cx - info.height / 2, y: cy - info.width / 2, width: info.height, height: info.width }),
+      this.host.origin,
+    );
   }
 
   setView(view: PageView) {
@@ -99,7 +117,7 @@ export class PageImages {
       if (url && img.src !== url) img.src = url;
       img.style.zIndex = String(z);
       if (img.parentElement !== this.el || this.el.children[z] !== img) this.el.insertBefore(img, this.el.children[z] ?? null);
-      this.place(img, this.preview?.id === info.id ? this.preview.rect : rectOf(info));
+      this.place(img, this.rectFor(info));
     });
     this.renderSelection();
   }
@@ -131,14 +149,31 @@ export class PageImages {
     this.overlay.hidden = false;
   }
 
-  /** <img> 的元素座標 (u 向右, v 向下) → PDF → 畫面：CSS matrix = viewport.transform × [1 0 0 -1 x y+h] */
+  /** 套索選取拖曳中：這些圖片暫時位移（null = 結束） */
+  setGroupOffset(ids: Set<string> | null, dx = 0, dy = 0) {
+    this.group = ids && ids.size ? { ids, dx, dy } : null;
+    const pageId = this.pageId();
+    if (!pageId) return;
+    for (const info of this.host.nb.images(pageId)) {
+      const img = this.imgs.get(info.id);
+      if (img && (ids?.has(info.id) || !this.group)) this.place(img, this.rectFor(info));
+    }
+  }
+
+  private rectFor(info: ImageInfo): Rect {
+    if (this.preview?.id === info.id) return this.preview.rect;
+    const r = rectOf(info);
+    if (this.group?.ids.has(info.id)) return { ...r, x: r.x + this.group.dx, y: r.y + this.group.dy };
+    return r;
+  }
+
+  /** <img> 的元素座標（原圖，向右、向下）→ PDF（含旋轉，見 imagePlacement）→ 畫面 */
   private place(img: HTMLImageElement, r: Rect) {
-    const [a, b, c, d, e, f] = this.view.viewport.transform;
-    const tx = a * r.x + c * (r.y + r.height) + e;
-    const ty = b * r.x + d * (r.y + r.height) + f;
-    img.style.width = `${r.width}px`;
-    img.style.height = `${r.height}px`;
-    img.style.transform = `matrix(${a}, ${b}, ${-c}, ${-d}, ${tx}, ${ty})`;
+    const { naturalWidth, naturalHeight, matrix } = imagePlacement(r);
+    const m = multiplyMatrix(this.view.viewport.transform, matrix);
+    img.style.width = `${naturalWidth}px`;
+    img.style.height = `${naturalHeight}px`;
+    img.style.transform = `matrix(${m.join(", ")})`;
   }
 
   deleteSelected(): boolean {
@@ -218,7 +253,7 @@ export class PageImages {
       const h = (w / d.rect.width) * d.rect.height;
       const right = d.mode === 1 || d.mode === 2;
       const topEdge = d.mode === 0 || d.mode === 1;
-      rect = { x: right ? anchor[0] : anchor[0] - w, y: topEdge ? anchor[1] : anchor[1] - h, width: w, height: h };
+      rect = { x: right ? anchor[0] : anchor[0] - w, y: topEdge ? anchor[1] : anchor[1] - h, width: w, height: h, rotation: d.rect.rotation };
     }
     this.preview = { id: d.id, rect };
     const img = this.imgs.get(d.id);
@@ -243,11 +278,12 @@ export class PageImages {
 interface Rect {
   x: number;
   y: number;
+  rotation: ImageInfo["rotation"];
   width: number;
   height: number;
 }
 
-const rectOf = (i: ImageInfo): Rect => ({ x: i.x, y: i.y, width: i.width, height: i.height });
+const rectOf = (i: ImageInfo): Rect => ({ x: i.x, y: i.y, width: i.width, height: i.height, rotation: i.rotation });
 
 /** 圖片框的四個角（PDF 座標）：左上、右上、右下、左下 */
 function cornerPoints(r: Rect): [number, number][] {

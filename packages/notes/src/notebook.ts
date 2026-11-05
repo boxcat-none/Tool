@@ -10,7 +10,7 @@ import type { FileInfo, ImageInfo, ImagePatch, NewImage, NewPage, PageInfo, Page
  *   pages    Y.Map     pageId → Y.Map { order, source, width, height, rotation }
  *   strokes  Y.Map     pageId → Y.Array<Uint8Array>（每筆 = 8 bytes 代號 + 單筆二進位編碼；陣列順序 = 疊放順序）
  *   files    Y.Map     fileId → FileInfo（檔案本身在 BlobStore）
- *   images   Y.Map     imageId → Y.Map { page, file, x, y, w, h, z }（z = 疊放順序，fractional indexing）
+ *   images   Y.Map     imageId → Y.Map { page, file, x, y, w, h, r, z }（r = 旋轉；z = 疊放順序，fractional indexing）
  *
  * 頁面順序用 fractional indexing（order 字串排序）：
  * 兩台裝置同時移動同一頁時，只有最後的位置生效，不會像清單「刪除再插入」那樣出現兩份。
@@ -205,6 +205,26 @@ export class Notebook {
     });
   }
 
+  /**
+   * 一次修改多筆（套索移動、改顏色）：每筆原位置取代，保留疊放順序。
+   * `fn` 回傳新的筆畫；整批是一個 transaction（一次復原、同步一次）。
+   */
+  updateStrokes(pageId: string, ids: Iterable<string>, fn: (stroke: Stroke) => Stroke): void {
+    const arr = this.strokesMap.get(pageId);
+    if (!arr) return;
+    const wanted = new Set(ids);
+    this.doc.transact(() => {
+      const items = arr.toArray();
+      for (let i = 0; i < items.length; i++) {
+        const id = strokeId(items[i]);
+        if (!wanted.has(id)) continue;
+        const next = packStroke(id, normalizeStroke(fn(decodeStroke(items[i].subarray(ID_BYTES)))));
+        arr.delete(i, 1);
+        arr.insert(i, [next]);
+      }
+    });
+  }
+
   private strokeArray(pageId: string): Y.Array<StoredStroke> {
     if (!this.pages.has(pageId)) throw new Error(`頁面不存在：${pageId}`);
     let arr = this.strokesMap.get(pageId);
@@ -250,6 +270,7 @@ export class Notebook {
     m.set("y", round2(image.y));
     m.set("w", round2(image.width));
     m.set("h", round2(image.height));
+    if (image.rotation) m.set("r", image.rotation);
     m.set("z", generateKeyBetween(top || null, null));
     this.imagesMap.set(id, m);
     return id;
@@ -264,6 +285,7 @@ export class Notebook {
       if (patch.y !== undefined) m.set("y", round2(patch.y));
       if (patch.width !== undefined) m.set("w", round2(patch.width));
       if (patch.height !== undefined) m.set("h", round2(patch.height));
+      if (patch.rotation !== undefined) m.set("r", patch.rotation);
     });
   }
 
@@ -386,7 +408,41 @@ function readImage(id: string, m: Y.Map<unknown>): ImageInfo {
     y: m.get("y") as number,
     width: m.get("w") as number,
     height: m.get("h") as number,
+    rotation: ((m.get("r") as number) ?? 0) as ImageInfo["rotation"],
   };
+}
+
+/**
+ * 圖片怎麼畫到頁面上：原圖（寬 naturalWidth × 高 naturalHeight，座標向右、向下）→ PDF 座標的轉換矩陣
+ * [a, b, c, d, e, f]（x' = a·u + c·v + e，y' = b·u + d·v + f）。閱讀器、縮圖、匯出都用這個，結果一致。
+ */
+export function imagePlacement(img: Pick<ImageInfo, "x" | "y" | "width" | "height" | "rotation">) {
+  const { x, y, width: w, height: h } = img;
+  const turned = img.rotation === 90 || img.rotation === 270;
+  const naturalWidth = turned ? h : w;
+  const naturalHeight = turned ? w : h;
+  let matrix: [number, number, number, number, number, number];
+  switch (img.rotation) {
+    case 90:
+      matrix = [0, -1, -1, 0, x + w, y + h];
+      break;
+    case 180:
+      matrix = [-1, 0, 0, 1, x + w, y];
+      break;
+    case 270:
+      matrix = [0, 1, 1, 0, x, y];
+      break;
+    default:
+      matrix = [1, 0, 0, -1, x, y + h];
+  }
+  return { naturalWidth, naturalHeight, matrix };
+}
+
+/** 兩個轉換矩陣相乘：先套用 inner，再套用 outer */
+export function multiplyMatrix(outer: number[], inner: number[]): [number, number, number, number, number, number] {
+  const [A, B, C, D, E, F] = outer;
+  const [a, b, c, d, e, f] = inner;
+  return [A * a + C * b, B * a + D * b, A * c + C * d, B * c + D * d, A * e + C * f + E, B * e + D * f + F];
 }
 
 /** 位置、大小取到 0.01 pt（同步資料小一點，各裝置結果一致） */

@@ -211,3 +211,27 @@ describe("代號與變動通知", () => {
     expect(strokeEvents).toHaveLength(count); // 取消訂閱後不再通知
   });
 });
+
+describe("一次修改多筆（套索）", () => {
+  it("移動、改顏色：保留疊放順序與代號，一次復原", () => {
+    const nb = Notebook.create("套索");
+    const [page] = nb.insertPages(0, [lined]);
+    const undo = nb.createUndoManager("me");
+    let ids: string[] = [];
+    nb.doc.transact(() => (ids = [1, 2, 3].map((i) => nb.addStroke(page, stroke(i * 10)))), "me");
+    nb.doc.transact(
+      () => nb.updateStrokes(page, [ids[0], ids[2]], (s) => ({ ...s, color: "#dc2626", points: s.points.map(([x, y, p]) => [x + 100, y, p]) })),
+      "me",
+    );
+    const after = nb.strokes(page);
+    expect(after.map((s) => s.id)).toEqual(ids);
+    expect(after.map((s) => s.stroke.color)).toEqual(["#dc2626", "#1e3a8a", "#dc2626"]);
+    expect(after.map((s) => s.stroke.points[0][0])).toEqual([110, 20, 130]);
+    undo.undo();
+    expect(nb.strokes(page).map((s) => [s.id, s.stroke.points[0][0], s.stroke.color])).toEqual([
+      [ids[0], 10, "#1e3a8a"],
+      [ids[1], 20, "#1e3a8a"],
+      [ids[2], 30, "#1e3a8a"],
+    ]);
+  });
+});

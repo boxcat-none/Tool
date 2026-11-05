@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 import { fakeJpeg, makePng } from "../../core/test/helpers";
 import { exportPdf, MemoryBlobStore, Notebook } from "../src";
+import { imagePlacement } from "../src/notebook";
 import { channelPair, PeerLink, SyncSession } from "../src/sync";
 
 const A4 = { width: 595.28, height: 841.89 };
@@ -121,15 +122,52 @@ describe("圖片", () => {
     // 兩頁共用同一個 PNG 物件
     const all = doc.context.enumerateIndirectObjects().filter(([, o]) => o instanceof PDFRawStream && o.dict.get(PDFName.of("Subtype")) === PDFName.of("Image"));
     expect(all).toHaveLength(2);
-    // 位置與大小（pdf-lib 先平移到 (x, y)，再縮放成寬高）
+    // 位置與大小：單位正方形 → (x, y, 寬, 高)
     const text = contentText(doc, 0);
-    expect(text).toMatch(/1 0 0 1 50 60 cm[\s\S]*200 0 0 100 0 0 cm/);
-    expect(text).toMatch(/1 0 0 1 300 400 cm[\s\S]*30 0 0 60 0 0 cm/);
+    expect(text).toContain("200 0 0 100 50 60 cm");
+    expect(text).toContain("30 0 0 60 300 400 cm");
     // 筆跡在圖片之後（上面）
     expect(text.lastIndexOf(" Do")).toBeLessThan(text.lastIndexOf(" f"));
 
     const none = await PDFDocument.load(await exportPdf(nb, blobs, { images: false, ink: "none" }));
     expect(imageXObjects(none, 0)).toBe(0);
+  });
+
+  it("旋轉：原圖四個角都落在框裡，方向正確；匯出時用同一個矩陣", async () => {
+    const box = { x: 10, y: 20, width: 60, height: 30 };
+    const apply = (m: number[], u: number, v: number) => [m[0] * u + m[2] * v + m[4], m[1] * u + m[3] * v + m[5]];
+    for (const rotation of [0, 90, 180, 270] as const) {
+      const b = rotation % 180 ? box : { ...box, width: 30, height: 60 };
+      const { naturalWidth: nw, naturalHeight: nh, matrix } = imagePlacement({ ...b, rotation });
+      const corners = [[0, 0], [nw, 0], [nw, nh], [0, nh]].map(([u, v]) => apply(matrix, u, v));
+      for (const [px, py] of corners) {
+        expect(px).toBeGreaterThanOrEqual(b.x - 1e-9);
+        expect(px).toBeLessThanOrEqual(b.x + b.width + 1e-9);
+        expect(py).toBeGreaterThanOrEqual(b.y - 1e-9);
+        expect(py).toBeLessThanOrEqual(b.y + b.height + 1e-9);
+      }
+      // 原圖的左上角：0 度在框的左上、90 度（順時針）在右上、180 度在右下、270 度在左下
+      const expected = { 0: [b.x, b.y + b.height], 90: [b.x + b.width, b.y + b.height], 180: [b.x + b.width, b.y], 270: [b.x, b.y] }[rotation];
+      expect(corners[0]).toEqual(expected);
+    }
+
+    const { nb, blobs, png, p1 } = await withImages();
+    nb.addImage(p1, { fileId: png, x: 10, y: 20, width: 60, height: 30, rotation: 90 });
+    const doc = await PDFDocument.load(await exportPdf(nb, blobs));
+    // 原圖 30×60 順時針轉 90 度：單位正方形 (s, t) → (10 + 60t, 50 − 30s)
+    expect(contentText(doc, 0)).toContain("0 -30 60 0 10 50 cm");
+  });
+
+  it("旋轉可以修改、同步、復原", async () => {
+    const { nb, png, p1 } = await withImages();
+    const undo = nb.createUndoManager("me");
+    const id = nb.addImage(p1, { fileId: png, x: 0, y: 0, width: 40, height: 20 });
+    expect(nb.getImage(id)!.rotation).toBe(0);
+    nb.doc.transact(() => nb.updateImage(id, { rotation: 90, width: 20, height: 40 }), "me");
+    const other = clone(nb);
+    expect(other.getImage(id)).toMatchObject({ rotation: 90, width: 20, height: 40 });
+    undo.undo();
+    expect(nb.getImage(id)).toMatchObject({ rotation: 0, width: 40, height: 20 });
   });
 
   it("同步：對方插入圖片 → 自動收到圖片檔", async () => {
