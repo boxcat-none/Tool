@@ -158,5 +158,7 @@ pdf.js 一次只能顯示一份 PDF，所以：
 
 ## 後續
 
-- W9–W11：同步（Yjs 更新訊息、awareness 即時筆跡、檔案庫傳輸）。
+- 同步協定（W7，`packages/notes/src/sync.ts`）：Yjs 更新（y-protocols sync）、awareness、檔案庫傳輸（缺的才要、分塊、驗證雜湊），
+  和連線方式無關；目前接 WebRTC（見 `docs/w7-lan-spike.md`）。收到的修改以 SyncSession 作為 origin，本機復原不會復原對方的動作。
+- W9–W11：配對方式、自動重新連線、awareness 即時筆跡。
 - 圖片（W12）：新增 `images` Y.Map（pageId → 位置、大小、fileId）。

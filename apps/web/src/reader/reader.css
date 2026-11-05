@@ -223,3 +223,20 @@
 .ink-input { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
 /* 閱讀器裡由程式處理兩指縮放，瀏覽器只負責捲動 */
 .reader__scroll { touch-action: pan-x pan-y; }
+
+/* ── 連線到其他裝置 ── */
+.sync { width: min(560px, 100%); max-height: calc(100vh - 32px); overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+.sync p { margin: 0; }
+.sync__steps { margin: 0; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 14px; }
+.sync__steps li { display: flex; flex-direction: column; gap: 6px; }
+.sync__code {
+  width: 100%; box-sizing: border-box; resize: vertical; padding: 8px 10px;
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-all;
+  color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+}
+.sync__code:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.sync__peers { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.sync__peers li { display: flex; align-items: center; gap: 8px; }
+.sync__peers .btn { margin-left: auto; }
+.sync__dot { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: var(--success); vertical-align: 1px; }
+.btn--small { padding: 4px 10px; font-size: 13px; }

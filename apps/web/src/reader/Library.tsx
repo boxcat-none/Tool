@@ -19,10 +19,11 @@ interface Props {
   onFiles: (files: File[]) => void;
   onNew: (template: PaperTemplate) => void;
   onOpen: (id: string) => void;
+  onJoin: () => void;
 }
 
 /** 書櫃：所有筆記本（自動儲存在這台裝置） */
-export function Library({ library, busy, error, onFiles, onNew, onOpen }: Props) {
+export function Library({ library, busy, error, onFiles, onNew, onOpen, onJoin }: Props) {
   const [items, setItems] = useState<NotebookMeta[] | null>(null);
   const [refresh, setRefresh] = useState(0);
 
@@ -76,6 +77,11 @@ export function Library({ library, busy, error, onFiles, onNew, onOpen }: Props)
               </button>
             ))}
           </span>
+        </div>
+
+        <div className="library__new">
+          <span className="field__label">其他裝置</span>
+          <button type="button" className="btn" disabled={!!busy} onClick={onJoin}>加入其他裝置的筆記本（測試版）</button>
         </div>
 
         {busy && <div className="status status--busy"><span className="spinner" aria-hidden="true" />{busy}</div>}
