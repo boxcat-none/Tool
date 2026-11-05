@@ -56,7 +56,22 @@ const PRIVACY = "連線資料只在兩台裝置之間直接傳送，不經過伺
 // ─────────────────────────────────────────────────────────────
 
 /** 邀請方：在開著的筆記本裡邀請其他裝置 */
-export function InviteDialog({ notebookId, title, peers, onClose }: { notebookId: string; title: string; peers: Peer[]; onClose: () => void }) {
+export function InviteDialog({
+  notebookId,
+  title,
+  peers,
+  presence = {},
+  onGoToPage,
+  onClose,
+}: {
+  notebookId: string;
+  title: string;
+  peers: Peer[];
+  /** 每台裝置正在看第幾頁（key = Peer.key） */
+  presence?: Record<number, number | undefined>;
+  onGoToPage?: (page: number) => void;
+  onClose: () => void;
+}) {
   const [invitation, setInvitation] = useState<Invitation | null>(null);
   const [answer, setAnswer] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
@@ -123,6 +138,9 @@ export function InviteDialog({ notebookId, title, peers, onClose }: { notebookId
                 {peers.map((p) => (
                   <li key={p.key}>
                     <span className="sync__dot" aria-hidden="true" />已連線：{p.remote.device}
+                    {presence[p.key] && (
+                      <button type="button" className="link" onClick={() => onGoToPage?.(presence[p.key]!)}>正在看第 {presence[p.key]} 頁</button>
+                    )}
                     <button type="button" className="btn btn--small" onClick={() => p.link.close()}>中斷</button>
                   </li>
                 ))}

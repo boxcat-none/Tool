@@ -46,8 +46,19 @@ interface PageLayers {
   pen: HTMLCanvasElement;
   input: HTMLDivElement;
   live: HTMLCanvasElement;
+  /** 其他裝置正在畫、還沒放開的筆畫 */
+  remote: HTMLCanvasElement;
   dpr: number;
 }
+
+/** 其他裝置正在畫的筆畫（透過 awareness 即時收到） */
+export interface RemoteLiveStroke {
+  pageId: string;
+  stroke: Stroke;
+}
+
+/** 正在畫的筆畫多久送一次給其他裝置（毫秒） */
+const LIVE_INTERVAL = 50;
 
 const HIGHLIGHTER_ALPHA = 0.35;
 /** 橡皮擦半徑（螢幕 px） */
@@ -74,6 +85,9 @@ export class InkController {
     frame?: number;
   } | null = null;
   private penSeen = false;
+  private remoteStrokes: RemoteLiveStroke[] = [];
+  private liveSentAt = 0;
+  private liveTimer: ReturnType<typeof setTimeout> | undefined;
   private offChange: () => void;
 
   constructor(
@@ -83,6 +97,8 @@ export class InkController {
     private origin: unknown,
     /** 第一次偵測到觸控筆（用來自動開啟「只用觸控筆」） */
     private onPenDetected?: () => void,
+    /** 正在畫的筆畫（給其他裝置即時顯示）；放開或取消時傳 null */
+    private onLive?: (live: RemoteLiveStroke | null) => void,
   ) {
     this.offChange = nb.onChange(() => {
       this.pageCache.clear();
@@ -119,6 +135,52 @@ export class InkController {
     this.resize(l);
     this.applyTool(l);
     this.redraw(index);
+    this.drawRemote(index);
+  }
+
+  /** 其他裝置正在畫的筆畫改變了 */
+  setRemoteLive(strokes: RemoteLiveStroke[]) {
+    const pages = new Set([...this.remoteStrokes, ...strokes].map((r) => r.pageId));
+    this.remoteStrokes = strokes;
+    for (const index of this.layers.keys()) {
+      const id = this.pageIdAt(index);
+      if (id && pages.has(id)) this.drawRemote(index);
+    }
+  }
+
+  private drawRemote(index: number) {
+    const l = this.layers.get(index);
+    if (!l) return;
+    const ctx = l.remote.getContext("2d")!;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, l.remote.width, l.remote.height);
+    const pageId = this.pageIdAt(index);
+    const mine = this.remoteStrokes.filter((r) => r.pageId === pageId);
+    if (!mine.length) return;
+    this.setTransform(ctx, l);
+    for (const { stroke } of mine) {
+      ctx.globalAlpha = stroke.tool === "highlighter" ? HIGHLIGHTER_ALPHA : 1;
+      ctx.fillStyle = stroke.color;
+      ctx.fill(outlinePath(stroke));
+    }
+  }
+
+  /** 把正在畫的筆畫送給其他裝置（限制頻率，最後一次一定送出） */
+  private sendLive(index: number, stroke: Stroke | null) {
+    if (!this.onLive) return;
+    clearTimeout(this.liveTimer);
+    const pageId = this.pageIdAt(index);
+    if (!stroke || !pageId) {
+      this.onLive(null);
+      return;
+    }
+    const send = () => {
+      this.liveSentAt = performance.now();
+      this.onLive?.({ pageId, stroke });
+    };
+    const wait = LIVE_INTERVAL - (performance.now() - this.liveSentAt);
+    if (wait <= 0) send();
+    else this.liveTimer = setTimeout(send, wait);
   }
 
   /**
@@ -139,7 +201,7 @@ export class InkController {
   private release(l: PageLayers) {
     l.root.remove();
     l.input.remove();
-    for (const c of [l.highlight, l.pen, l.live]) c.width = c.height = 0;
+    for (const c of [l.highlight, l.pen, l.live, l.remote]) c.width = c.height = 0;
   }
 
   /** 顯示用的 PDF 換了（插頁、刪頁等），舊的頁面元素都作廢 */
@@ -165,7 +227,9 @@ export class InkController {
     highlight.className = "ink-layer__highlight";
     const pen = document.createElement("canvas");
     pen.className = "ink-layer__pen";
-    root.append(highlight, pen);
+    const remote = document.createElement("canvas");
+    remote.className = "ink-layer__remote";
+    root.append(highlight, pen, remote);
 
     const input = document.createElement("div");
     input.className = "ink-input";
@@ -175,7 +239,7 @@ export class InkController {
     live.getContext("2d", { desynchronized: true });
     input.append(live);
 
-    const l: PageLayers = { view, root, highlight, pen, input, live, dpr: 1 };
+    const l: PageLayers = { view, root, highlight, pen, input, live, remote, dpr: 1 };
     input.addEventListener("pointerdown", (e) => this.onDown(l, e));
     input.addEventListener("pointermove", (e) => this.onMove(l, e));
     input.addEventListener("pointerup", (e) => this.onUp(l, e));
@@ -201,7 +265,7 @@ export class InkController {
     let dpr = window.devicePixelRatio || 1;
     if (width * height * dpr * dpr > MAX_INK_CANVAS_PIXELS) dpr = Math.sqrt(MAX_INK_CANVAS_PIXELS / (width * height));
     l.dpr = dpr;
-    for (const c of [l.highlight, l.pen, l.live]) {
+    for (const c of [l.highlight, l.pen, l.live, l.remote]) {
       const w = Math.max(1, Math.round(width * dpr));
       const h = Math.max(1, Math.round(height * dpr));
       if (c.width !== w) c.width = w;
@@ -290,6 +354,7 @@ export class InkController {
       this.redraw(a.index);
     }
     this.clearLive(a.l);
+    this.sendLive(a.index, null);
   }
 
   private onDown(l: PageLayers, e: PointerEvent) {
@@ -356,6 +421,8 @@ export class InkController {
     this.active = null;
     if (active.frame) cancelAnimationFrame(active.frame);
     const pageId = this.pageIdAt(active.index);
+    // 先寫進筆記本（同步給對方），再清掉對方畫面上的「正在畫」，才不會閃一下
+    const hadLive = !!active.stroke;
     if (pageId && active.stroke) {
       const stroke = active.stroke;
       this.nb.doc.transact(() => this.nb.addStroke(pageId, stroke), this.origin);
@@ -366,6 +433,7 @@ export class InkController {
       this.nb.doc.transact(() => this.nb.removeStrokes(pageId, ids), this.origin);
     }
     this.clearLive(l);
+    if (hadLive) this.sendLive(active.index, null);
     if (this.settings().tool === "eraser" && e.pointerType !== "touch") this.drawEraserCursor(l, e);
   }
 
@@ -384,6 +452,7 @@ export class InkController {
       ctx.fillStyle = stroke.color;
       const predicted = this.active.predicted ?? [];
       ctx.fill(outlinePath(predicted.length ? { ...stroke, points: [...stroke.points, ...predicted] } : stroke));
+      this.sendLive(this.active.index, stroke);
     });
   }
 
