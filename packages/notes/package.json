@@ -8,7 +8,8 @@
     ".": "./src/index.ts",
     "./notebook": "./src/notebook.ts",
     "./blobs": "./src/blobs.ts",
-    "./file": "./src/file.ts"
+    "./file": "./src/file.ts",
+    "./sync": "./src/sync.ts"
   },
   "scripts": {
     "test": "vitest run",
@@ -16,10 +17,12 @@
   },
   "dependencies": {
     "@tool/core": "workspace:*",
-    "fractional-indexing": "4.0.0",
-    "yjs": "13.6.33",
     "fflate": "0.8.3",
-    "pdf-lib": "npm:@cantoo/pdf-lib@2.11.1"
+    "fractional-indexing": "4.0.0",
+    "lib0": "0.2.117",
+    "pdf-lib": "npm:@cantoo/pdf-lib@2.11.1",
+    "y-protocols": "1.0.6",
+    "yjs": "13.6.33"
   },
   "devDependencies": {
     "@types/node": "^22",

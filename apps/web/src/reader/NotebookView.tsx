@@ -14,6 +14,10 @@ import { attachTouchGestures } from "./gestures";
 import { InkController, paintStrokes, type InkSettings } from "./ink";
 import { HIGHLIGHTER_COLORS, HIGHLIGHTER_SIZES, InkToolbar, PEN_COLORS, PEN_SIZES } from "./InkToolbar";
 import { PasswordForm } from "./PasswordForm";
+import { Awareness, SyncSession } from "@tool/notes/sync";
+import { syncHub, type Peer } from "../sync/hub";
+import { InviteDialog } from "../sync/SyncDialogs";
+import { deviceName } from "../sync/webrtc";
 
 /** 本機修改的標記：復原只會復原這個來源的動作 */
 const LOCAL = "this-device";
@@ -140,6 +144,7 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
   /** rebuild 是非同步的，用 ref 取得最新的密碼 */
   const passwordRef = useRef<string | undefined>(initialPassword);
   const nbRef = useRef<Notebook | null>(null);
+  const peersRef = useRef<Peer[]>([]);
   const [status, setStatus] = useState<Status>({ kind: "loading" });
   const [page, setPage] = useState(1);
   const [pageInput, setPageInput] = useState("1");
@@ -167,6 +172,9 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
   const [dirty, setDirty] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [toast, setToast] = useState<{ text: string; error?: boolean } | null>(null);
+  /** 連上的其他裝置 */
+  const [peers, setPeers] = useState<Peer[]>(() => syncHub.list(notebookId));
+  const [inviteOpen, setInviteOpen] = useState(false);
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -300,6 +308,7 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
       let metaTimer: number | undefined;
       const offChange = notebook.onChange(({ local }) => {
         if (local) setDirty(true);
+        else setTitle(notebook.title);
         window.clearTimeout(metaTimer);
         metaTimer = window.setTimeout(() => {
           const base = metaRef.current;
@@ -339,10 +348,46 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
         if (changed.length) setThumbVersions((v) => Object.fromEntries([...Object.entries(v), ...changed.map((i) => [i, (v[i] ?? 0) + 1])]));
       });
 
+      // 其他裝置的同步：每條連線一個 SyncSession，共用一份線上狀態（awareness）
+      const awareness = new Awareness(notebook.doc);
+      awareness.setLocalState({ device: deviceName() });
+      const sessions = new Map<number, SyncSession>();
+      const attachPeers = () => {
+        const list = syncHub.list(notebookId);
+        for (const [key, session] of sessions) {
+          if (!list.some((p) => p.key === key)) {
+            session.close();
+            sessions.delete(key);
+            const left = peersRef.current.find((p) => p.key === key);
+            if (left && !disposed) setToast({ text: `與 ${left.remote.device} 的連線已中斷。` });
+          }
+        }
+        for (const p of list) {
+          if (sessions.has(p.key)) continue;
+          sessions.set(
+            p.key,
+            new SyncSession(p.link, notebook, library.blobs, {
+              // 對方傳來新的原始檔（例如插入了另一份 PDF 的頁面）→ 重新產生顯示用 PDF
+              onFile: () => void rebuild(notebook),
+              onError: (e) => setToast({ text: e.message, error: true }),
+            }, awareness),
+          );
+        }
+        peersRef.current = list;
+        setPeers(list);
+      };
+      const offHub = syncHub.subscribe(notebookId, attachPeers);
+      attachPeers();
+
       setNb(notebook);
       nbRef.current = notebook;
       await rebuild(notebook, true);
       cleanup = () => {
+        offHub();
+        sessions.forEach((s) => s.close());
+        // 離開筆記本就中斷連線
+        syncHub.closeAll(notebookId);
+        awareness.destroy();
         window.clearTimeout(metaTimer);
         window.clearTimeout(rebuildTimer);
         offChange();
@@ -367,6 +412,11 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
 
   /** 產生顯示用的 PDF：原封不動時直接用原檔，否則在 Worker 裡由筆記本產生 */
   async function rebuild(notebook: Notebook, first = false) {
+    // 其他裝置剛插入用到新原始檔的頁面，檔案還在傳：收到後（onFile）會再呼叫一次
+    if (syncHub.list(notebookId).length) {
+      const has = await Promise.all(notebook.usedFileIds.map((id) => library.blobs.has(id)));
+      if (has.includes(false)) return;
+    }
     const pageIds = notebook.pageIds;
     const prev = displayRef.current;
     const focusPageId =
@@ -754,6 +804,15 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
         <span className="reader__spacer" />
         {ready && (
           <>
+            <button
+              type="button"
+              className={`btn reader__connect${peers.length ? " btn--on" : ""}`}
+              aria-haspopup="dialog"
+              title="和其他裝置同時編輯這本筆記本"
+              onClick={() => setInviteOpen(true)}
+            >
+              {peers.length ? <><span className="sync__dot" aria-hidden="true" />已連線 {peers.length} 台</> : "連線"}
+            </button>
             <span className="reader__menu">
               <button
                 type="button"
@@ -930,6 +989,9 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
               從上次讀到的第 {resumed} 頁繼續 ·{" "}
               <button type="button" className="link" onClick={() => (goToPage(1), setResumed(null))}>回到第 1 頁</button>
             </div>
+          )}
+          {inviteOpen && (
+            <InviteDialog notebookId={notebookId} title={title} peers={peers} onClose={() => setInviteOpen(false)} />
           )}
           {status.kind === "loading" && <div className="reader__overlay"><span className="spinner" aria-hidden="true" /> 開啟中…</div>}
           {status.kind === "password" && (

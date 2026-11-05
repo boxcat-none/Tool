@@ -12,6 +12,8 @@
 | 14 | 匯出有密碼的 PDF 時，輸出**不含密碼保護**（會提示）；之後可加「匯出時設定密碼」 | 需要保密的文件匯出後要自行加密 | 未排定（@cantoo/pdf-lib 已支援加密，加入選項即可） |
 | 15 | iPad Safari 記憶體上限較低：已降低 iOS 的 canvas 上限、手寫層跟著 pdf.js 釋放（300 頁翻完最多 10 頁的手寫層），**尚未在 iPad 實機確認大檔案** | 可能在 iPad 上變慢或重新載入 | 請依 `docs/ipad-test-checklist.md` 測試 |
 | 16 | 主畫面 App 與 Safari 分頁的資料分開（iPadOS 限制），兩邊的筆記本互相看不到 | 要用 .guganote 搬移 | 系統限制；W9–W11 同步後自然解決 |
+| 17 | **裝置連線（測試版，W7）**：要手動傳兩次連線碼；不會自動重新連線；有些 Wi-Fi（用戶端隔離、擋 mDNS）連不上；正在畫的筆畫還不會即時顯示；**尚未在 iPad ↔ Windows 實機測試** | 協作還不方便 | 配對方式：W9 前決定（見 `docs/w7-lan-spike.md`）；自動重連：W9；即時筆畫：W11；不能互連的 Wi-Fi：W14 雲端 |
+| 18 | 軟體版 Linux 的 WebView（WebKitGTK）沒有 WebRTC，不能連線 | Linux 軟體版要改用瀏覽器開網頁版連線 | 未排定 |
 | 8 | Office 轉 PDF：損毀的 docx 會被 LibreOffice 當成純文字轉出，而不是回報錯誤 | 輕微，LibreOffice 本身的行為 | — |
 
 ## 已完成

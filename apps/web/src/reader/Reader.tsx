@@ -1,4 +1,5 @@
-import type { PaperTemplate } from "@tool/notes/notebook";
+import { sha256Hex } from "@tool/notes/blobs";
+import { Notebook, type PaperTemplate } from "@tool/notes/notebook";
 import { useEffect, useState } from "react";
 import * as Y from "yjs";
 import { openLibrary, type Library as LibraryStore } from "../lib/library";
@@ -6,6 +7,7 @@ import { openPdf } from "../lib/pdfjs";
 import { Library } from "./Library";
 import { NotebookView } from "./NotebookView";
 import { PasswordForm } from "./PasswordForm";
+import { JoinDialog } from "../sync/SyncDialogs";
 import "./reader.css";
 
 const A4 = { width: 595.28, height: 841.89 };
@@ -31,6 +33,7 @@ export default function Reader() {
   const [choice, setChoice] = useState<(PendingPdf & { existing: { id: string; title: string; pageCount: number } }) | null>(null);
   /** 建立筆記本前，有密碼的 PDF 需要先輸入密碼（才能讀出每頁大小） */
   const [askPassword, setAskPassword] = useState<(PendingPdf & { wrong: boolean }) | null>(null);
+  const [joinOpen, setJoinOpen] = useState(false);
 
   useEffect(() => {
     void openLibrary().then(setLibrary);
@@ -63,7 +66,6 @@ export default function Reader() {
     setBusy("讀取 PDF…");
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
-      const { sha256Hex } = await import("@tool/notes/blobs");
       const hash = await sha256Hex(bytes);
       const existing = await library.findBySource(hash);
       setBusy(null);
@@ -87,7 +89,6 @@ export default function Reader() {
       return fail(`「${pdf.name}」不是有效的 PDF，或檔案已損毀。`);
     }
     try {
-      const { Notebook } = await import("@tool/notes/notebook");
       const pages = await Promise.all(Array.from({ length: opened.doc.numPages }, (_, i) => opened.doc.getPage(i + 1)));
       const title = await uniqueTitle(pdf.name.replace(/\.pdf$/i, ""));
       const nb = Notebook.create(title);
@@ -151,7 +152,6 @@ export default function Reader() {
     setError(null);
     setBusy("建立筆記本…");
     try {
-      const { Notebook } = await import("@tool/notes/notebook");
       const nb = Notebook.create(await uniqueTitle("未命名筆記本"));
       nb.insertPages(0, [{ source: { kind: "template", template }, ...A4 }]);
       const added = await library.add(nb, { title: nb.title, pageCount: 1, fileIds: [] });
@@ -184,7 +184,15 @@ export default function Reader() {
         onFiles={(files) => void openFiles(files)}
         onNew={(t) => void createBlank(t)}
         onOpen={(id) => setView({ kind: "notebook", id })}
+        onJoin={() => (setError(null), setJoinOpen(true))}
       />
+      {joinOpen && (
+        <JoinDialog
+          library={library}
+          onJoined={(id) => (setJoinOpen(false), setView({ kind: "notebook", id }))}
+          onClose={() => setJoinOpen(false)}
+        />
+      )}
       {choice && (
         <div className="modal" role="dialog" aria-modal="true" aria-labelledby="choice-title">
           <div className="notice modal__box">
