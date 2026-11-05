@@ -242,3 +242,20 @@
 .sync__peers .btn { margin-left: auto; }
 .sync__dot { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: var(--success); vertical-align: 1px; }
 .btn--small { padding: 4px 10px; font-size: 13px; }
+
+/* ── 插入的圖片（在筆跡下面） ── */
+.note-images { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.note-image { position: absolute; left: 0; top: 0; transform-origin: 0 0; max-width: none; user-select: none; -webkit-user-select: none; pointer-events: none; }
+.ink-input--select { cursor: default; }
+.image-select { position: absolute; box-sizing: border-box; border: 2px solid var(--accent); pointer-events: none; }
+.image-select__handle {
+  position: absolute; width: 16px; height: 16px; margin: -8px 0 0 -8px; box-sizing: border-box;
+  background: #fff; border: 2px solid var(--accent); border-radius: 50%; pointer-events: auto; touch-action: none; cursor: nwse-resize;
+}
+.image-select__handle[data-corner="1"], .image-select__handle[data-corner="3"] { cursor: nesw-resize; }
+/* 觸控時角比較大，比較好按 */
+@media (pointer: coarse) { .image-select__handle { width: 26px; height: 26px; margin: -13px 0 0 -13px; } }
+.image-select__delete {
+  position: absolute; right: -2px; bottom: calc(100% + 6px); padding: 4px 10px; font-size: 13px;
+  color: #fff; background: var(--danger); border: 0; border-radius: 6px; pointer-events: auto; cursor: pointer; white-space: nowrap;
+}

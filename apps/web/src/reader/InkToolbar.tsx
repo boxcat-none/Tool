@@ -43,6 +43,12 @@ const TOOLS: { tool: Tool; label: string; key: string; icon: JSX.Element }[] = [
     key: "E",
     icon: <path d="m9 19.5 11-11-4.5-4.5-11 11 4.5 4.5h11M6.8 12.7l4.5 4.5" />,
   },
+  {
+    tool: "select",
+    label: "選取圖片（移動、縮放、刪除）",
+    key: "S",
+    icon: <path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4M9 9h6v6H9Z" />,
+  },
 ];
 
 interface Props {
@@ -53,6 +59,7 @@ interface Props {
   onUndo: () => void;
   onRedo: () => void;
   onExport: () => void;
+  onInsertImage: () => void;
   /** 存成 .guganote 檔 */
   onSave: () => void;
   /** 不能匯出時的原因（例如有密碼的 PDF） */
@@ -60,7 +67,7 @@ interface Props {
   exporting: boolean;
 }
 
-export function InkToolbar({ settings, onChange, canUndo, canRedo, onUndo, onRedo, onExport, onSave, exportBlocked, exporting }: Props) {
+export function InkToolbar({ settings, onChange, canUndo, canRedo, onUndo, onRedo, onExport, onInsertImage, onSave, exportBlocked, exporting }: Props) {
   const { tool } = settings;
   const isHl = tool === "highlighter";
   const colors = isHl ? HIGHLIGHTER_COLORS : PEN_COLORS;
@@ -88,6 +95,11 @@ export function InkToolbar({ settings, onChange, canUndo, canRedo, onUndo, onRed
           </button>
         ))}
       </span>
+
+      <span className="ink-toolbar__sep" />
+      <button type="button" className="icon" aria-label="插入圖片" title="插入圖片（也可以直接貼上：Ctrl+V）" onClick={onInsertImage}>
+        <svg className="icon__svg" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2" /><circle cx="9" cy="10" r="1.6" /><path d="m4 17 5-5 4 4 2.5-2.5L20 17" /></svg>
+      </button>
 
       {(tool === "pen" || tool === "highlighter") && (
         <>

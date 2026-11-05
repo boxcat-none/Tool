@@ -1,7 +1,7 @@
 import { loadPdf } from "@tool/core";
 import { flattenInk, writeInk, type Stroke } from "@tool/core/ink";
 import { normalizeRotation } from "@tool/core/rotation";
-import { degrees, PDFDocument, type PDFPage } from "pdf-lib";
+import { degrees, PDFDocument, type PDFImage, type PDFPage } from "pdf-lib";
 import type { BlobStore } from "./blobs";
 import type { Notebook } from "./notebook";
 import { readOutline, writeOutline, type OutlineItem } from "./outline";
@@ -48,11 +48,13 @@ export interface ExportOptions {
   outline?: boolean;
   /** 有密碼的原始檔：檔案代號 → 開啟密碼（只在記憶體中使用，不會儲存） */
   passwords?: Record<string, string>;
+  /** 是否包含插入的圖片。預設 true；閱讀器的顯示用 PDF 不含（圖片另外畫，才能即時移動） */
+  images?: boolean;
 }
 
 /** 把筆記本匯出成 PDF */
 export async function exportPdf(nb: Notebook, blobs: BlobStore, options: ExportOptions = {}): Promise<Uint8Array> {
-  const { ink = "flatten", outline = true, passwords = {} } = options;
+  const { ink = "flatten", outline = true, passwords = {}, images = true } = options;
   const ids = options.pageIds ?? nb.pageIds;
   const out = await PDFDocument.create();
   const painter = new PaperPainter(out);
@@ -103,6 +105,7 @@ export async function exportPdf(nb: Notebook, blobs: BlobStore, options: ExportO
   }
 
   const inkByPage = new Map<number, Stroke[]>();
+  const imagesByPage = new Map<PDFPage, ReturnType<Notebook["images"]>>();
   ids.forEach((id, i) => {
     const info = nb.getPage(id);
     if (!info) return;
@@ -116,6 +119,10 @@ export async function exportPdf(nb: Notebook, blobs: BlobStore, options: ExportO
       painter.paint(page, info.source.template, info.width, info.height);
     }
     page.setRotation(degrees(info.rotation));
+    if (images) {
+      const list = nb.images(id);
+      if (list.length) imagesByPage.set(page, list);
+    }
     if (ink !== "none") {
       const strokes = nb.strokes(id).map((s) => s.stroke);
       if (strokes.length) inkByPage.set(i, strokes);
@@ -131,6 +138,25 @@ export async function exportPdf(nb: Notebook, blobs: BlobStore, options: ExportO
     });
   }
 
+  // 圖片：畫在頁面內容上、筆跡下面（同一個檔案只嵌入一次）
+  if (imagesByPage.size) {
+    const embedded = new Map<string, PDFImage>();
+    for (const [page, list] of imagesByPage) {
+      // 原本的內容包在 q…Q 裡，避免它沒有還原的座標變換影響圖片位置
+      page.node.wrapContentStreams(out.context.register(out.context.stream("q\n")), out.context.register(out.context.stream("Q\n")));
+      for (const img of list) {
+        let embed = embedded.get(img.fileId);
+        if (!embed) {
+          const bytes = await blobs.get(img.fileId);
+          if (!bytes) throw new Error(`找不到圖片「${nb.getFile(img.fileId)?.name ?? img.fileId}」。`);
+          embed = isPng(bytes) ? await out.embedPng(bytes) : await out.embedJpg(bytes);
+          embedded.set(img.fileId, embed);
+        }
+        page.drawImage(embed, { x: img.x, y: img.y, width: img.width, height: img.height });
+      }
+    }
+  }
+
   if (ink === "flatten") flattenInk(out, inkByPage);
   else if (ink === "annotations") writeInk(out, inkByPage);
 
@@ -139,6 +165,8 @@ export async function exportPdf(nb: Notebook, blobs: BlobStore, options: ExportO
   out.setCreator("PDF 工具箱");
   return out.save();
 }
+
+const isPng = (b: Uint8Array) => b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47;
 
 function offsetTargets(items: OutlineItem[], base: number): OutlineItem[] {
   return items.map((it) => ({

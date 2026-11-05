@@ -1,7 +1,7 @@
 import { decodeStroke, encodeStroke, normalizeStroke, type Stroke } from "@tool/core/ink/core";
 import { generateKeyBetween } from "fractional-indexing";
 import * as Y from "yjs";
-import type { FileInfo, NewPage, PageInfo, PageSource } from "./types";
+import type { FileInfo, ImageInfo, ImagePatch, NewImage, NewPage, PageInfo, PageSource } from "./types";
 
 /**
  * 筆記本資料模型（Yjs 文件）。多台裝置各自修改後可以自動合併，不會互相覆蓋。
@@ -10,6 +10,7 @@ import type { FileInfo, NewPage, PageInfo, PageSource } from "./types";
  *   pages    Y.Map     pageId → Y.Map { order, source, width, height, rotation }
  *   strokes  Y.Map     pageId → Y.Array<Uint8Array>（每筆 = 8 bytes 代號 + 單筆二進位編碼；陣列順序 = 疊放順序）
  *   files    Y.Map     fileId → FileInfo（檔案本身在 BlobStore）
+ *   images   Y.Map     imageId → Y.Map { page, file, x, y, w, h, z }（z = 疊放順序，fractional indexing）
  *
  * 頁面順序用 fractional indexing（order 字串排序）：
  * 兩台裝置同時移動同一頁時，只有最後的位置生效，不會像清單「刪除再插入」那樣出現兩份。
@@ -46,6 +47,7 @@ export class Notebook {
   private readonly pages: Y.Map<Y.Map<unknown>>;
   private readonly strokesMap: Y.Map<Y.Array<StoredStroke>>;
   private readonly files: Y.Map<FileInfo>;
+  private readonly imagesMap: Y.Map<Y.Map<unknown>>;
 
   constructor(doc: Y.Doc = new Y.Doc()) {
     this.doc = doc;
@@ -53,6 +55,7 @@ export class Notebook {
     this.pages = doc.getMap("pages");
     this.strokesMap = doc.getMap("strokes");
     this.files = doc.getMap("files");
+    this.imagesMap = doc.getMap("images");
   }
 
   static create(title: string): Notebook {
@@ -143,10 +146,12 @@ export class Notebook {
 
   deletePages(ids: string[]): void {
     this.doc.transact(() => {
+      const remove = new Set(ids);
       for (const id of ids) {
         this.pages.delete(id);
         this.strokesMap.delete(id);
       }
+      for (const [imageId, m] of this.imagesMap) if (remove.has(m.get("page") as string)) this.imagesMap.delete(imageId);
     });
   }
 
@@ -210,6 +215,64 @@ export class Notebook {
     return arr;
   }
 
+  // ── 圖片 ───────────────────────────────────────────
+
+  /** 某頁的圖片（依疊放順序，先畫的在下面） */
+  images(pageId: string): ImageInfo[] {
+    const list: (ImageInfo & { z: string })[] = [];
+    for (const [id, m] of this.imagesMap) {
+      if (m.get("page") !== pageId) continue;
+      list.push({ ...readImage(id, m), z: (m.get("z") as string) ?? "" });
+    }
+    return list
+      .sort((a, b) => (a.z < b.z ? -1 : a.z > b.z ? 1 : a.id < b.id ? -1 : 1))
+      .map(({ z: _z, ...img }) => img);
+  }
+
+  getImage(id: string): ImageInfo | undefined {
+    const m = this.imagesMap.get(id);
+    return m ? readImage(id, m) : undefined;
+  }
+
+  /** 加一張圖片到頁面最上層，回傳圖片代號 */
+  addImage(pageId: string, image: NewImage): string {
+    if (!this.pages.has(pageId)) throw new Error(`頁面不存在：${pageId}`);
+    const top = [...this.imagesMap.values()]
+      .filter((m) => m.get("page") === pageId)
+      .map((m) => (m.get("z") as string) ?? "")
+      .sort()
+      .pop();
+    const id = newId();
+    const m = new Y.Map<unknown>();
+    m.set("page", pageId);
+    m.set("file", image.fileId);
+    m.set("x", round2(image.x));
+    m.set("y", round2(image.y));
+    m.set("w", round2(image.width));
+    m.set("h", round2(image.height));
+    m.set("z", generateKeyBetween(top || null, null));
+    this.imagesMap.set(id, m);
+    return id;
+  }
+
+  /** 移動或縮放（兩台裝置同時改同一張時，每個欄位以最後一次為準） */
+  updateImage(id: string, patch: ImagePatch): void {
+    const m = this.imagesMap.get(id);
+    if (!m) return;
+    this.doc.transact(() => {
+      if (patch.x !== undefined) m.set("x", round2(patch.x));
+      if (patch.y !== undefined) m.set("y", round2(patch.y));
+      if (patch.width !== undefined) m.set("w", round2(patch.width));
+      if (patch.height !== undefined) m.set("h", round2(patch.height));
+    });
+  }
+
+  removeImages(ids: Iterable<string>): void {
+    this.doc.transact(() => {
+      for (const id of ids) this.imagesMap.delete(id);
+    });
+  }
+
   // ── 檔案 ───────────────────────────────────────────
 
   addFile(info: FileInfo): void {
@@ -224,6 +287,7 @@ export class Notebook {
   get usedFileIds(): string[] {
     const ids = new Set<string>();
     for (const page of this.pageList) if (page.source.kind === "pdf") ids.add(page.source.fileId);
+    for (const m of this.imagesMap.values()) if (this.pages.has(m.get("page") as string)) ids.add(m.get("file") as string);
     return [...ids];
   }
 
@@ -242,6 +306,38 @@ export class Notebook {
     const handler = () => callback();
     this.pages.observeDeep(handler);
     return () => this.pages.unobserveDeep(handler);
+  }
+
+  /** 圖片新增、移動、縮放、刪除時通知，並告訴是哪些頁面 */
+  onImagesChange(callback: (pageIds: Set<string>) => void): () => void {
+    // 刪除後的 Y.Map 內容已經清掉，所以自己記住每張圖在哪一頁
+    const pageOf = new Map<string, string>();
+    for (const [id, m] of this.imagesMap) pageOf.set(id, m.get("page") as string);
+    const handler = (events: Y.YEvent<Y.AbstractType<unknown>>[]) => {
+      const ids = new Set<string>();
+      for (const e of events) {
+        if (e.target === this.imagesMap) {
+          for (const key of (e as Y.YMapEvent<Y.Map<unknown>>).keysChanged) {
+            const now = this.imagesMap.get(key);
+            const before = pageOf.get(key);
+            if (before) ids.add(before);
+            if (now) {
+              const page = now.get("page") as string;
+              ids.add(page);
+              pageOf.set(key, page);
+            } else {
+              pageOf.delete(key);
+            }
+          }
+        } else {
+          const page = (e.target as Y.Map<unknown>).get("page");
+          if (typeof page === "string") ids.add(page);
+        }
+      }
+      if (ids.size) callback(ids);
+    };
+    this.imagesMap.observeDeep(handler);
+    return () => this.imagesMap.unobserveDeep(handler);
   }
 
   /** 筆跡改變時通知，並告訴是哪些頁面 */
@@ -267,7 +363,7 @@ export class Notebook {
    * 本機修改請包在 `nb.doc.transact(fn, origin)` 裡。
    */
   createUndoManager(origin: unknown): Y.UndoManager {
-    return new Y.UndoManager([this.pages, this.strokesMap], {
+    return new Y.UndoManager([this.pages, this.strokesMap, this.imagesMap], {
       trackedOrigins: new Set([origin]),
       captureTimeout: 0, // 每個動作（一筆、一次插頁）各自可以復原
     });
@@ -281,10 +377,25 @@ function newStrokeId(): string {
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+function readImage(id: string, m: Y.Map<unknown>): ImageInfo {
+  return {
+    id,
+    pageId: m.get("page") as string,
+    fileId: m.get("file") as string,
+    x: m.get("x") as number,
+    y: m.get("y") as number,
+    width: m.get("w") as number,
+    height: m.get("h") as number,
+  };
+}
+
+/** 位置、大小取到 0.01 pt（同步資料小一點，各裝置結果一致） */
+const round2 = (v: number) => Math.round(v * 100) / 100;
+
 function newId(): string {
   const bytes = new Uint8Array(12);
   crypto.getRandomValues(bytes);
   return [...bytes].map((b) => b.toString(36).padStart(2, "0")).join("").slice(0, 16);
 }
 
-export type { FileInfo, NewPage, PageInfo, PageSource, PaperTemplate } from "./types";
+export type { FileInfo, ImageInfo, ImagePatch, NewImage, NewPage, PageInfo, PageSource, PaperTemplate } from "./types";
