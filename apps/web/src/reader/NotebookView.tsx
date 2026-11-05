@@ -11,7 +11,7 @@ import { platform } from "../lib/platform";
 import { loadPosition, loadPref, savePosition, savePref } from "../lib/readingPosition";
 import { createThumbnailer, type ThumbnailDoc } from "../lib/thumbnails";
 import { attachTouchGestures } from "./gestures";
-import { InkController, paintStrokes, type InkSettings } from "./ink";
+import { InkController, paintStrokes, type InkSettings, type RemoteLiveStroke } from "./ink";
 import { HIGHLIGHTER_COLORS, HIGHLIGHTER_SIZES, InkToolbar, PEN_COLORS, PEN_SIZES } from "./InkToolbar";
 import { PasswordForm } from "./PasswordForm";
 import { Awareness, SyncSession } from "@tool/notes/sync";
@@ -145,6 +145,9 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
   const passwordRef = useRef<string | undefined>(initialPassword);
   const nbRef = useRef<Notebook | null>(null);
   const peersRef = useRef<Peer[]>([]);
+  const awarenessRef = useRef<Awareness | null>(null);
+  /** 每台連上的裝置正在看第幾頁（key = Peer.key） */
+  const [presence, setPresence] = useState<Record<number, number | undefined>>({});
   const [status, setStatus] = useState<Status>({ kind: "loading" });
   const [page, setPage] = useState(1);
   const [pageInput, setPageInput] = useState("1");
@@ -216,6 +219,7 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
       eventBus.on("pagechanging", (e: { pageNumber: number }) => {
         setPage(e.pageNumber);
         setPageInput(String(e.pageNumber));
+        awarenessRef.current?.setLocalStateField("page", e.pageNumber);
         window.clearTimeout(saveTimer);
         saveTimer = window.setTimeout(() => savePosition(positionKey, e.pageNumber), 500);
       });
@@ -296,7 +300,7 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
         savePref("penAuto", "done");
         setInk((s) => ({ ...s, penOnly: true }));
         setToast({ text: "偵測到觸控筆，已開啟「只用觸控筆」：手指用來捲動和縮放。" });
-      });
+      }, (live) => awarenessRef.current?.setLocalStateField("live", live && encodeLive(live)));
       inkCtl.current = ctl;
       const undo = notebook.createUndoManager(LOCAL);
       undoRef.current = undo;
@@ -350,7 +354,25 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
 
       // 其他裝置的同步：每條連線一個 SyncSession，共用一份線上狀態（awareness）
       const awareness = new Awareness(notebook.doc);
-      awareness.setLocalState({ device: deviceName() });
+      awareness.setLocalState({ device: deviceName(), page: parts.current?.viewer.currentPageNumber ?? 1 });
+      awarenessRef.current = awareness;
+      // 對方的線上狀態：正在畫的筆畫、正在看的頁
+      const onAwareness = () => {
+        const live: RemoteLiveStroke[] = [];
+        for (const [client, state] of awareness.getStates()) {
+          if (client === awareness.clientID) continue;
+          const l = decodeLive(state.live);
+          if (l) live.push(l);
+        }
+        ctl.setRemoteLive(live);
+        const pages: Record<number, number | undefined> = {};
+        for (const [key, session] of sessions) {
+          const state = session.peers.values().next().value;
+          pages[key] = typeof state?.page === "number" ? state.page : undefined;
+        }
+        setPresence((old) => (JSON.stringify(old) === JSON.stringify(pages) ? old : pages));
+      };
+      awareness.on("change", onAwareness);
       const sessions = new Map<number, SyncSession>();
       const attachPeers = () => {
         const list = syncHub.list(notebookId);
@@ -375,6 +397,7 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
         }
         peersRef.current = list;
         setPeers(list);
+        onAwareness();
       };
       const offHub = syncHub.subscribe(notebookId, attachPeers);
       attachPeers();
@@ -384,6 +407,8 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
       await rebuild(notebook, true);
       cleanup = () => {
         offHub();
+        awareness.off("change", onAwareness);
+        awarenessRef.current = null;
         sessions.forEach((s) => s.close());
         // 離開筆記本就中斷連線
         syncHub.closeAll(notebookId);
@@ -808,7 +833,7 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
               type="button"
               className={`btn reader__connect${peers.length ? " btn--on" : ""}`}
               aria-haspopup="dialog"
-              title="和其他裝置同時編輯這本筆記本"
+              title={peers.length ? peers.map((p) => `${p.remote.device}${presence[p.key] ? `：第 ${presence[p.key]} 頁` : ""}`).join("、") : "和其他裝置同時編輯這本筆記本"}
               onClick={() => setInviteOpen(true)}
             >
               {peers.length ? <><span className="sync__dot" aria-hidden="true" />已連線 {peers.length} 台</> : "連線"}
@@ -991,7 +1016,7 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
             </div>
           )}
           {inviteOpen && (
-            <InviteDialog notebookId={notebookId} title={title} peers={peers} onClose={() => setInviteOpen(false)} />
+            <InviteDialog notebookId={notebookId} title={title} peers={peers} presence={presence} onGoToPage={(n) => (setInviteOpen(false), goToPage(n))} onClose={() => setInviteOpen(false)} />
           )}
           {status.kind === "loading" && <div className="reader__overlay"><span className="spinner" aria-hidden="true" /> 開啟中…</div>}
           {status.kind === "password" && (
@@ -1061,4 +1086,31 @@ function safeName(name: string): string {
 
 function encryptedFileIds(nb: Notebook): string[] {
   return nb.usedFileIds.filter((id) => nb.getFile(id)?.encrypted);
+}
+
+/**
+ * 正在畫的筆畫放進 awareness 的格式：座標取到 0.1 pt、筆壓取到 0.01，攤平成一個數字陣列，
+ * 每 50 毫秒送一次整筆（awareness 每次都送完整狀態）。
+ */
+interface LiveState {
+  page: string;
+  tool: "pen" | "highlighter";
+  color: string;
+  size: number;
+  pts: number[];
+}
+
+function encodeLive({ pageId, stroke }: RemoteLiveStroke): LiveState {
+  const pts: number[] = [];
+  for (const [x, y, p] of stroke.points) pts.push(Math.round(x * 10) / 10, Math.round(y * 10) / 10, Math.round((p ?? 0.5) * 100) / 100);
+  return { page: pageId, tool: stroke.tool, color: stroke.color, size: stroke.size, pts };
+}
+
+function decodeLive(value: unknown): RemoteLiveStroke | null {
+  const v = value as LiveState | null | undefined;
+  if (!v || typeof v.page !== "string" || !Array.isArray(v.pts) || v.pts.length < 3) return null;
+  if (v.tool !== "pen" && v.tool !== "highlighter") return null;
+  const points: [number, number, number][] = [];
+  for (let i = 0; i + 2 < v.pts.length; i += 3) points.push([v.pts[i], v.pts[i + 1], v.pts[i + 2]]);
+  return { pageId: v.page, stroke: { tool: v.tool, color: String(v.color), size: Number(v.size) || 1, points } };
 }

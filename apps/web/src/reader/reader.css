@@ -148,6 +148,8 @@
 .ink-layer canvas, .ink-input__live { position: absolute; inset: 0; width: 100%; height: 100%; }
 /* 螢光筆和頁面相乘：底下的字還看得到 */
 .ink-layer__highlight, .ink-input__live--highlighter { mix-blend-mode: multiply; }
+/* 其他裝置正在畫的筆畫（含螢光筆）：和頁面相乘，鋼筆的深色不受影響 */
+.ink-layer__remote { mix-blend-mode: multiply; }
 .ink-input { position: absolute; inset: 0; z-index: 10; touch-action: none; }
 .ink-input__live { pointer-events: none; }
 .ink-input[data-tool="pen"], .ink-input[data-tool="highlighter"] { cursor: crosshair; }
