@@ -1,6 +1,7 @@
 import { strokeOutline, type Stroke } from "@tool/core/ink/core";
 import type { Notebook } from "@tool/notes/notebook";
 import { MAX_INK_CANVAS_PIXELS } from "../lib/device";
+import { PageImages, type ImageHost } from "./images";
 
 /**
  * 閱讀器上的手寫層。
@@ -14,7 +15,7 @@ import { MAX_INK_CANVAS_PIXELS } from "../lib/device";
  * 所以縮放、旋轉都會對齊。已完成的筆畫外框會快取成 Path2D，重畫整頁很快。
  */
 
-export type Tool = "read" | "pen" | "highlighter" | "eraser";
+export type Tool = "read" | "pen" | "highlighter" | "eraser" | "select";
 
 export interface InkSettings {
   tool: Tool;
@@ -36,6 +37,7 @@ interface PageView {
     scale: number;
     transform: number[];
     convertToPdfPoint(x: number, y: number): number[];
+    convertToViewportPoint(x: number, y: number): number[];
   };
 }
 
@@ -48,6 +50,8 @@ interface PageLayers {
   live: HTMLCanvasElement;
   /** 其他裝置正在畫、還沒放開的筆畫 */
   remote: HTMLCanvasElement;
+  /** 插入的圖片（在筆跡下面） */
+  images: PageImages;
   dpr: number;
 }
 
@@ -66,7 +70,7 @@ const ERASER_RADIUS = 10;
 /** 手寫層 canvas 的安全上限（正常情況下由 sweep 跟著 pdf.js 釋放，用不到這個上限） */
 const MAX_LAYERS = 40;
 
-export class InkController {
+export class InkController implements ImageHost {
   private layers = new Map<number, PageLayers>();
   private paths = new Map<string, Path2D>();
   private decoded = new Map<string, { stroke: Stroke; bbox: [number, number, number, number] }>();
@@ -86,19 +90,28 @@ export class InkController {
   } | null = null;
   private penSeen = false;
   private remoteStrokes: RemoteLiveStroke[] = [];
+  private selectedImage: string | null = null;
+  /** 圖片檔 → 網址（object URL）；null = 讀取中或讀不到（之後重試） */
+  private imageUrls = new Map<string, string | null>();
+  /** 已經解碼的圖片（畫縮圖用） */
+  private imageElements = new Map<string, HTMLImageElement>();
   private liveSentAt = 0;
   private liveTimer: ReturnType<typeof setTimeout> | undefined;
   private offChange: () => void;
 
   constructor(
-    private nb: Notebook,
+    readonly nb: Notebook,
     private pageIdAt: (index: number) => string | undefined,
     private settings: () => InkSettings,
-    private origin: unknown,
+    readonly origin: unknown,
     /** 第一次偵測到觸控筆（用來自動開啟「只用觸控筆」） */
     private onPenDetected?: () => void,
     /** 正在畫的筆畫（給其他裝置即時顯示）；放開或取消時傳 null */
     private onLive?: (live: RemoteLiveStroke | null) => void,
+    /** 讀取圖片檔（檔案庫） */
+    private getBlob?: (fileId: string) => Promise<Uint8Array | undefined>,
+    /** 選取的圖片改變 */
+    private onSelect?: (id: string | null) => void,
   ) {
     this.offChange = nb.onChange(() => {
       this.pageCache.clear();
@@ -108,6 +121,9 @@ export class InkController {
 
   destroy() {
     this.offChange();
+    for (const url of this.imageUrls.values()) if (url) URL.revokeObjectURL(url);
+    this.imageUrls.clear();
+    this.imageElements.clear();
     for (const l of this.layers.values()) {
       l.root.remove();
       l.input.remove();
@@ -136,6 +152,71 @@ export class InkController {
     this.applyTool(l);
     this.redraw(index);
     this.drawRemote(index);
+  }
+
+  // ── 圖片（ImageHost） ───────────────────────────────
+
+  selectMode() {
+    return this.settings().tool === "select";
+  }
+
+  selected() {
+    return this.selectedImage;
+  }
+
+  select(id: string | null) {
+    if (id === this.selectedImage) return;
+    this.selectedImage = id;
+    for (const l of this.layers.values()) l.images.render();
+    this.onSelect?.(id);
+  }
+
+  /** 刪除選取的圖片（Delete 鍵） */
+  deleteSelectedImage(): boolean {
+    for (const l of this.layers.values()) if (l.images.deleteSelected()) return true;
+    return false;
+  }
+
+  imageUrl(fileId: string): string | undefined {
+    const cached = this.imageUrls.get(fileId);
+    if (cached) return cached;
+    if (cached === null || !this.getBlob) return undefined; // 讀取中
+    this.imageUrls.set(fileId, null);
+    void this.getBlob(fileId).then((bytes) => {
+      if (!bytes) {
+        // 還沒有這個檔案（例如其他裝置還在傳）：下次重畫時再試
+        this.imageUrls.delete(fileId);
+        return;
+      }
+      const mime = this.nb.getFile(fileId)?.mime ?? (bytes[0] === 0x89 ? "image/png" : "image/jpeg");
+      const url = URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: mime }));
+      this.imageUrls.set(fileId, url);
+      const el = new Image();
+      el.src = url;
+      void el.decode().then(() => this.imageElements.set(fileId, el), () => {});
+      for (const l of this.layers.values()) l.images.render();
+    });
+    return undefined;
+  }
+
+  /** 縮圖用：把某頁的圖片畫到 canvas 上（transform：PDF 座標 → canvas 像素）；還沒解碼的圖片略過 */
+  paintImages(ctx: CanvasRenderingContext2D, transform: number[], pageId: string) {
+    const list = this.nb.images(pageId);
+    if (!list.length) return;
+    ctx.save();
+    const [a, b, c, d, e, f] = transform;
+    for (const img of list) {
+      const el = this.imageElements.get(img.fileId);
+      if (!el) {
+        this.imageUrl(img.fileId);
+        continue;
+      }
+      // 圖片的 (0,0) 在左上：PDF 的 (x, y + h)，往下是 PDF 的 -y
+      ctx.setTransform(a, b, c, d, e, f);
+      ctx.transform(1, 0, 0, -1, img.x, img.y + img.height);
+      ctx.drawImage(el, 0, 0, img.width, img.height);
+    }
+    ctx.restore();
   }
 
   /** 其他裝置正在畫的筆畫改變了 */
@@ -202,6 +283,7 @@ export class InkController {
     l.root.remove();
     l.input.remove();
     for (const c of [l.highlight, l.pen, l.live, l.remote]) c.width = c.height = 0;
+    l.images.overlay.remove();
   }
 
   /** 顯示用的 PDF 換了（插頁、刪頁等），舊的頁面元素都作廢 */
@@ -213,7 +295,11 @@ export class InkController {
 
   /** 工具改變時更新游標與輸入層 */
   refreshTool() {
-    for (const l of this.layers.values()) this.applyTool(l);
+    if (!this.selectMode()) this.select(null);
+    for (const l of this.layers.values()) {
+      this.applyTool(l);
+      l.images.render();
+    }
   }
 
   redrawAll() {
@@ -229,7 +315,9 @@ export class InkController {
     pen.className = "ink-layer__pen";
     const remote = document.createElement("canvas");
     remote.className = "ink-layer__remote";
-    root.append(highlight, pen, remote);
+    const index = view.id - 1;
+    const images = new PageImages(this, view, () => this.pageIdAt(index));
+    root.append(images.el, highlight, pen, remote);
 
     const input = document.createElement("div");
     input.className = "ink-input";
@@ -237,9 +325,9 @@ export class InkController {
     live.className = "ink-input__live";
     // 低延遲模式：正在畫的線不必等整個畫面合成（支援的瀏覽器才有效）
     live.getContext("2d", { desynchronized: true });
-    input.append(live);
+    input.append(live, images.overlay);
 
-    const l: PageLayers = { view, root, highlight, pen, input, live, remote, dpr: 1 };
+    const l: PageLayers = { view, root, highlight, pen, input, live, remote, images, dpr: 1 };
     input.addEventListener("pointerdown", (e) => this.onDown(l, e));
     input.addEventListener("pointermove", (e) => this.onMove(l, e));
     input.addEventListener("pointerup", (e) => this.onUp(l, e));
@@ -247,8 +335,13 @@ export class InkController {
     // Apple Pencil：在第一個觸控事件就取消瀏覽器的預設行為，
     // 否則 Safari 會把筆的拖曳當成「長按選取文字」或捲動頁面
     const stopStylus = (e: TouchEvent) => {
-      if (this.settings().tool === "read") return;
-      if (Array.from(e.changedTouches).some((t) => (t as Touch & { touchType?: string }).touchType === "stylus")) {
+      const tool = this.settings().tool;
+      if (tool === "read") return;
+      const touches = Array.from(e.changedTouches);
+      if (touches.some((t) => (t as Touch & { touchType?: string }).touchType === "stylus")) {
+        e.preventDefault();
+      } else if (tool === "select" && e.type === "touchstart" && e.touches.length === 1 && l.images.hits(touches[0].clientX, touches[0].clientY, e.target)) {
+        // 選取工具：手指按在圖片上 → 拖曳圖片；按在空白處 → 照常捲動（「只用觸控筆」時）
         e.preventDefault();
       }
     };
@@ -278,6 +371,7 @@ export class InkController {
     l.input.dataset.tool = tool;
     // 閱讀模式：輸入層不攔截滑鼠，才能選取文字、點連結
     l.input.style.pointerEvents = tool === "read" ? "none" : "auto";
+    l.input.classList.toggle("ink-input--select", tool === "select");
     // 「只用觸控筆」：手指交給瀏覽器捲動（兩指縮放由 gestures.ts 處理）；否則手指也用來書寫
     l.input.style.touchAction = this.settings().penOnly ? "pan-x pan-y" : "none";
     if (tool === "read") this.clearLive(l);
@@ -293,6 +387,7 @@ export class InkController {
   private redraw(index: number) {
     const l = this.layers.get(index);
     if (!l) return;
+    l.images.render();
     const pageId = this.pageIdAt(index);
     const hl = l.highlight.getContext("2d")!;
     const pen = l.pen.getContext("2d")!;
@@ -360,13 +455,21 @@ export class InkController {
   private onDown(l: PageLayers, e: PointerEvent) {
     const s = this.settings();
     if (s.tool === "read") return;
-    if (s.penOnly && e.pointerType === "touch") return;
+    if (s.penOnly && e.pointerType === "touch" && s.tool !== "select") return;
     if (this.active) {
       // 第二根手指放下：這是縮放手勢，不是書寫
       if (e.pointerType === "touch" && this.active.pointerType === "touch") this.cancelTouchStroke();
       return;
     }
     if (e.button !== 0 && e.pointerType === "mouse") return;
+    if (s.tool === "select") {
+      // 選取工具：點圖片選取、拖曳移動，拉角縮放
+      if (l.images.pointerDown(e)) {
+        e.preventDefault();
+        l.input.setPointerCapture(e.pointerId);
+      }
+      return;
+    }
     e.preventDefault();
     l.input.setPointerCapture(e.pointerId);
     if (e.pointerType === "pen" && !this.penSeen) {
@@ -393,6 +496,7 @@ export class InkController {
   private onMove(l: PageLayers, e: PointerEvent) {
     const s = this.settings();
     if (s.tool === "read") return;
+    if (s.tool === "select") return l.images.pointerMove(e);
     if (!this.active) {
       if (s.tool === "eraser") this.drawEraserCursor(l, e);
       return;
@@ -416,6 +520,7 @@ export class InkController {
   }
 
   private onUp(l: PageLayers, e: PointerEvent) {
+    if (l.images.dragging) return l.images.pointerUp(e, e.type === "pointercancel");
     const active = this.active;
     if (!active || e.pointerId !== active.pointerId) return;
     this.active = null;

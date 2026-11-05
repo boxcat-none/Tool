@@ -20,7 +20,8 @@ Y.Doc
 ├─ pages    Y.Map   pageId → Y.Map { order, source, width, height, rotation }
 ├─ strokes  Y.Map   pageId → Y.Array<Uint8Array>
 │                    每個元素 = 8 bytes 筆畫代號 + 單筆二進位編碼；陣列順序 = 疊放順序
-└─ files    Y.Map   fileId → { id, name, mime, size }
+├─ files    Y.Map   fileId → { id, name, mime, size }
+└─ images   Y.Map   imageId → Y.Map { page, file, x, y, w, h, z }
 
 檔案庫（不在 Yjs 裡）：原始 PDF、圖片，以 SHA-256 命名，每台裝置只下載一次
 ```
@@ -56,6 +57,21 @@ const undo = nb.createUndoManager(LOCAL);
 nb.doc.transact(() => nb.addStroke(pageId, stroke), LOCAL);
 undo.undo(); // 只復原本機的動作
 ```
+
+### 圖片（W12）
+
+| 欄位 | 說明 |
+|---|---|
+| `page`、`file` | 在哪一頁、圖片檔（檔案庫代號，JPEG 或 PNG） |
+| `x`、`y`、`w`、`h` | 左下角與大小（pt，和筆跡同一個座標系），取到 0.01 pt |
+| `z` | 疊放順序（fractional indexing）；新插入的在最上面 |
+
+- 每張圖一個 Y.Map：兩台裝置同時移動、縮放同一張圖時，每個欄位以最後一次為準，不會變成兩張；一邊刪除一邊移動 → 刪除。
+- 插入時（`apps/web/src/lib/noteImage.ts`）：依 EXIF 轉正；JPEG 一律重新編碼（**移除拍攝地點等 EXIF 資料**）；
+  長邊超過 2400 px 縮小；不大的 PNG 保留原檔；WebP、GIF 等轉成 PNG。
+- 閱讀器用 `<img>` 疊在頁面上、筆跡下面（不畫進顯示用 PDF），所以拖曳時不必重新產生 PDF；匯出時才畫進頁面（在筆跡下面，同一張圖只嵌入一次）。
+- `usedFileIds` 包含圖片：同步時自動傳圖片檔、`.guganote` 會打包、刪除筆記本時一起清掉。
+- 頁面刪除時一併刪除該頁的圖片；復原會一起還原。
 
 ## 衝突情境（皆有自動測試，見 `packages/notes/test/notebook.test.ts`）
 
@@ -161,4 +177,4 @@ pdf.js 一次只能顯示一份 PDF，所以：
 - 同步協定（W7，`packages/notes/src/sync.ts`）：Yjs 更新（y-protocols sync）、awareness、檔案庫傳輸（缺的才要、分塊、驗證雜湊），
   和連線方式無關；目前接 WebRTC（見 `docs/w7-lan-spike.md`）。收到的修改以 SyncSession 作為 origin，本機復原不會復原對方的動作。
 - W9–W11：配對方式、自動重新連線、awareness 即時筆跡。
-- 圖片（W12）：新增 `images` Y.Map（pageId → 位置、大小、fileId）。
+- 套索選取（W13）：筆跡的移動、改顏色用 `replaceStroke`（保留疊放順序）。

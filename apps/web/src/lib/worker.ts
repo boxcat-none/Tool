@@ -79,7 +79,8 @@ self.onmessage = async (event: MessageEvent<WorkerRequest & { id: number }>) => 
       case "notebookPdf": {
         const doc = new Y.Doc();
         Y.applyUpdate(doc, req.update);
-        result = await exportPdf(new Notebook(doc), workerBlobs, { ink: req.ink, passwords: req.passwords });
+        // 顯示用（ink: none）不含圖片：閱讀器另外疊上圖片，才能即時移動
+        result = await exportPdf(new Notebook(doc), workerBlobs, { ink: req.ink, passwords: req.passwords, images: req.ink !== "none" });
         doc.destroy();
         break;
       }

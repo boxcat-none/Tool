@@ -34,3 +34,18 @@ export interface FileInfo {
   /** 有密碼保護的 PDF：只能閱讀與書寫，不能插頁、刪頁或匯出 */
   encrypted?: boolean;
 }
+
+/** 頁面上的圖片。座標是 PDF 使用者空間（pt，原點左下），和筆跡相同；(x, y) 是圖片左下角 */
+export interface ImageInfo {
+  id: string;
+  pageId: string;
+  /** 圖片檔（檔案庫裡的代號，JPEG 或 PNG） */
+  fileId: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export type NewImage = Omit<ImageInfo, "id" | "pageId">;
+export type ImagePatch = Partial<Pick<ImageInfo, "x" | "y" | "width" | "height">>;

@@ -178,6 +178,9 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
   /** 連上的其他裝置 */
   const [peers, setPeers] = useState<Peer[]>(() => syncHub.list(notebookId));
   const [inviteOpen, setInviteOpen] = useState(false);
+  /** 選取的圖片（「選取」工具） */
+  const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const imageInput = useRef<HTMLInputElement>(null);
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -300,7 +303,9 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
         savePref("penAuto", "done");
         setInk((s) => ({ ...s, penOnly: true }));
         setToast({ text: "偵測到觸控筆，已開啟「只用觸控筆」：手指用來捲動和縮放。" });
-      }, (live) => awarenessRef.current?.setLocalStateField("live", live && encodeLive(live)));
+      }, (live) => awarenessRef.current?.setLocalStateField("live", live && encodeLive(live)),
+      (fileId) => library.blobs.get(fileId),
+      setSelectedImage);
       inkCtl.current = ctl;
       const undo = notebook.createUndoManager(LOCAL);
       undoRef.current = undo;
@@ -336,8 +341,8 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
         window.clearTimeout(rebuildTimer);
         rebuildTimer = window.setTimeout(() => void rebuild(notebook), 120);
       });
-      // 筆跡改變 → 對應頁面的縮圖重畫
-      const offStrokes = notebook.onStrokesChange((ids) => {
+      // 筆跡或圖片改變 → 對應頁面的縮圖重畫
+      const onPageContent = (ids: Set<string>) => {
         const d = displayRef.current;
         const t = thumbsRef.current;
         if (!d || !t) return;
@@ -350,7 +355,9 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
           }
         });
         if (changed.length) setThumbVersions((v) => Object.fromEntries([...Object.entries(v), ...changed.map((i) => [i, (v[i] ?? 0) + 1])]));
-      });
+      };
+      const offStrokes = notebook.onStrokesChange(onPageContent);
+      const offImages = notebook.onImagesChange(onPageContent);
 
       // 其他裝置的同步：每條連線一個 SyncSession，共用一份線上狀態（awareness）
       const awareness = new Awareness(notebook.doc);
@@ -390,7 +397,11 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
             p.key,
             new SyncSession(p.link, notebook, library.blobs, {
               // 對方傳來新的原始檔（例如插入了另一份 PDF 的頁面）→ 重新產生顯示用 PDF
-              onFile: () => void rebuild(notebook),
+              onFile: (fileId) => {
+                ctl.redrawAll(); // 圖片檔到了：直接顯示
+                // 原始 PDF 到了才需要重新產生顯示用 PDF（圖片不在裡面）
+                if (pdfFileIds(notebook).includes(fileId)) void rebuild(notebook);
+              },
               onError: (e) => setToast({ text: e.message, error: true }),
             }, awareness),
           );
@@ -418,6 +429,7 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
         offChange();
         offPages();
         offStrokes();
+        offImages();
         ctl.destroy();
         undo.destroy();
         inkCtl.current = null;
@@ -439,7 +451,7 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
   async function rebuild(notebook: Notebook, first = false) {
     // 其他裝置剛插入用到新原始檔的頁面，檔案還在傳：收到後（onFile）會再呼叫一次
     if (syncHub.list(notebookId).length) {
-      const has = await Promise.all(notebook.usedFileIds.map((id) => library.blobs.has(id)));
+      const has = await Promise.all(pdfFileIds(notebook).map((id) => library.blobs.has(id)));
       if (has.includes(false)) return;
     }
     const pageIds = notebook.pageIds;
@@ -464,7 +476,8 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
         }
         bytes = await notebookPdf(
           Y.encodeStateAsUpdate(notebook.doc),
-          { ids: notebook.usedFileIds, get: (id) => library.blobs.get(id) },
+          // 顯示用 PDF 不含圖片，只需要原始 PDF
+          { ids: pdfFileIds(notebook), get: (id) => library.blobs.get(id) },
           "none",
           passwordsFor(notebook),
         );
@@ -544,7 +557,9 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
       const t = createThumbnailer(opened.doc, {
         decorate: (ctx, transform, index) => {
           const id = displayRef.current?.pageIds[index];
-          if (id) paintStrokes(ctx, transform, nb.strokes(id).map((s) => s.stroke), 1.2);
+          if (!id) return;
+          inkCtl.current?.paintImages(ctx, transform, id);
+          paintStrokes(ctx, transform, nb.strokes(id).map((s) => s.stroke), 1.2);
         },
       });
       thumbsRef.current = t;
@@ -670,6 +685,42 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
     focusNext.current = created[0];
   };
 
+  /** 插入圖片：放在目前這一頁的中間，然後切到「選取」工具並選取它 */
+  const insertImages = async (files: File[]) => {
+    const notebook = nbRef.current;
+    const ctl = inkCtl.current;
+    const pageId = currentPageId();
+    const info = pageId && notebook ? notebook.getPage(pageId) : undefined;
+    if (!notebook || !ctl || !pageId || !info) return;
+    const { prepareNoteImage, defaultImageSize } = await import("../lib/noteImage");
+    let last: string | null = null;
+    for (const [i, file] of files.entries()) {
+      try {
+        const img = await prepareNoteImage(file, file.name || "圖片");
+        const fileId = await library.blobs.put(img.bytes);
+        const size = defaultImageSize(img, info);
+        // 一次插入多張時稍微錯開
+        const offset = i * 18;
+        notebook.doc.transact(() => {
+          notebook.addFile({ id: fileId, name: file.name || "圖片", mime: img.mime, size: img.bytes.length });
+          last = notebook.addImage(pageId, {
+            fileId,
+            x: Math.max(0, (info.width - size.width) / 2 + offset),
+            y: Math.max(0, (info.height - size.height) / 2 - offset),
+            ...size,
+          });
+        }, LOCAL);
+      } catch (e) {
+        setToast({ text: (e as Error).message, error: true });
+      }
+    }
+    if (last) {
+      setInk((s) => ({ ...s, tool: "select" }));
+      // 等工具切換生效後再選取
+      window.setTimeout(() => inkCtl.current?.select(last), 0);
+    }
+  };
+
   const deletePage = (id: string) => {
     if (!nb || structureBlocked) return;
     const ids = nb.pageIds;
@@ -768,8 +819,13 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
       } else if (!typing && mod && (((e.key === "z" || e.key === "Z") && e.shiftKey) || e.key === "y" || e.key === "Y")) {
         e.preventDefault();
         undoRef.current?.redo();
-      } else if (!typing && !mod && !e.altKey && ["v", "p", "h", "e"].includes(e.key.toLowerCase())) {
-        const tools = { v: "read", p: "pen", h: "highlighter", e: "eraser" } as const;
+      } else if (!typing && !mod && (e.key === "Delete" || e.key === "Backspace") && selectedImage) {
+        e.preventDefault();
+        inkCtl.current?.deleteSelectedImage();
+      } else if (!typing && e.key === "Escape" && selectedImage) {
+        inkCtl.current?.select(null);
+      } else if (!typing && !mod && !e.altKey && ["v", "p", "h", "e", "s"].includes(e.key.toLowerCase())) {
+        const tools = { v: "read", p: "pen", h: "highlighter", e: "eraser", s: "select" } as const;
         setInk((s) => ({ ...s, tool: tools[e.key.toLowerCase() as keyof typeof tools] }));
       } else if (!typing && !mod && e.key === "ArrowRight") {
         goToPage(page + 1);
@@ -779,6 +835,20 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  });
+
+  // 貼上圖片（例如截圖後 Ctrl+V）
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const t = e.target;
+      if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) return;
+      const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
+      if (!files.length || status.kind !== "ready") return;
+      e.preventDefault();
+      void insertImages(files);
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
   });
 
   const commitPage = () => {
@@ -901,11 +971,26 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
           onUndo={() => undoRef.current?.undo()}
           onRedo={() => undoRef.current?.redo()}
           onExport={() => void exportNotes()}
+          onInsertImage={() => imageInput.current?.click()}
           onSave={() => void saveNotebook()}
           exportBlocked={encrypted && !password ? "請先輸入 PDF 的開啟密碼" : undefined}
           exporting={exporting}
         />
       )}
+
+      <input
+        ref={imageInput}
+        type="file"
+        accept="image/*"
+        multiple
+        hidden
+        aria-label="選擇要插入的圖片"
+        onChange={(e) => {
+          const files = [...(e.target.files ?? [])];
+          e.target.value = "";
+          if (files.length) void insertImages(files);
+        }}
+      />
 
       {ready && searchOpen && (
         <div className="reader__search" role="search">
@@ -1113,4 +1198,9 @@ function decodeLive(value: unknown): RemoteLiveStroke | null {
   const points: [number, number, number][] = [];
   for (let i = 0; i + 2 < v.pts.length; i += 3) points.push([v.pts[i], v.pts[i + 1], v.pts[i + 2]]);
   return { pageId: v.page, stroke: { tool: v.tool, color: String(v.color), size: Number(v.size) || 1, points } };
+}
+
+/** 頁面用到的原始 PDF（不含插入的圖片） */
+function pdfFileIds(nb: Notebook): string[] {
+  return [...new Set(nb.pageList.flatMap((p) => (p.source.kind === "pdf" ? [p.source.fileId] : [])))];
 }
