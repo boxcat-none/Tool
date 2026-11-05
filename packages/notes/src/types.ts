@@ -35,7 +35,11 @@ export interface FileInfo {
   encrypted?: boolean;
 }
 
-/** 頁面上的圖片。座標是 PDF 使用者空間（pt，原點左下），和筆跡相同；(x, y) 是圖片左下角 */
+/**
+ * 頁面上的圖片。座標是 PDF 使用者空間（pt，原點左下），和筆跡相同。
+ * (x, y, width, height) 是圖片「轉過之後」在頁面上佔的框；rotation 是圖片內容順時針轉幾度
+ * （以未旋轉的頁面來看）。轉 90 或 270 度時，原圖的寬對應框的高。
+ */
 export interface ImageInfo {
   id: string;
   pageId: string;
@@ -45,7 +49,8 @@ export interface ImageInfo {
   y: number;
   width: number;
   height: number;
+  rotation: 0 | 90 | 180 | 270;
 }
 
-export type NewImage = Omit<ImageInfo, "id" | "pageId">;
-export type ImagePatch = Partial<Pick<ImageInfo, "x" | "y" | "width" | "height">>;
+export type NewImage = Omit<ImageInfo, "id" | "pageId" | "rotation"> & { rotation?: ImageInfo["rotation"] };
+export type ImagePatch = Partial<Pick<ImageInfo, "x" | "y" | "width" | "height" | "rotation">>;

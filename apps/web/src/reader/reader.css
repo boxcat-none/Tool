@@ -255,7 +255,18 @@
 .image-select__handle[data-corner="1"], .image-select__handle[data-corner="3"] { cursor: nesw-resize; }
 /* 觸控時角比較大，比較好按 */
 @media (pointer: coarse) { .image-select__handle { width: 26px; height: 26px; margin: -13px 0 0 -13px; } }
-.image-select__delete {
-  position: absolute; right: -2px; bottom: calc(100% + 6px); padding: 4px 10px; font-size: 13px;
-  color: #fff; background: var(--danger); border: 0; border-radius: 6px; pointer-events: auto; cursor: pointer; white-space: nowrap;
+.image-select__actions { position: absolute; right: -2px; bottom: calc(100% + 6px); display: flex; gap: 4px; pointer-events: auto; }
+.image-select__actions button {
+  padding: 4px 10px; font-size: 13px; color: var(--text); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 6px; cursor: pointer; white-space: nowrap; box-shadow: 0 1px 3px rgb(0 0 0 / 0.15);
 }
+.image-select__actions .image-select__danger { color: #fff; background: var(--danger); border-color: var(--danger); }
+
+/* ── 套索選取 ── */
+.lasso-select { position: absolute; box-sizing: border-box; border: 1.5px dashed var(--accent); background: rgb(37 99 235 / 0.05); border-radius: 4px; pointer-events: none; cursor: move; }
+.lasso-select__actions { position: absolute; left: 0; bottom: calc(100% + 6px); display: flex; align-items: center; gap: 6px; pointer-events: auto; }
+.lasso-select__colors { display: flex; gap: 4px; padding: 3px 5px; background: var(--surface); border: 1px solid var(--border); border-radius: 999px; box-shadow: 0 1px 3px rgb(0 0 0 / 0.15); }
+.lasso-select__colors[hidden] { display: none; }
+.lasso-select__color { width: 20px; height: 20px; padding: 0; border: 2px solid var(--surface); border-radius: 50%; cursor: pointer; box-shadow: 0 0 0 1px var(--border); }
+@media (pointer: coarse) { .lasso-select__color { width: 28px; height: 28px; } }
+.lasso-select__delete { padding: 4px 10px; font-size: 13px; color: #fff; background: var(--danger); border: 0; border-radius: 6px; cursor: pointer; white-space: nowrap; box-shadow: 0 1px 3px rgb(0 0 0 / 0.15); }

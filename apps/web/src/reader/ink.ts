@@ -1,7 +1,8 @@
 import { strokeOutline, type Stroke } from "@tool/core/ink/core";
-import type { Notebook } from "@tool/notes/notebook";
+import { imagePlacement, type Notebook } from "@tool/notes/notebook";
 import { MAX_INK_CANVAS_PIXELS } from "../lib/device";
 import { PageImages, type ImageHost } from "./images";
+import { PEN_COLORS } from "./InkToolbar";
 
 /**
  * 閱讀器上的手寫層。
@@ -52,7 +53,17 @@ interface PageLayers {
   remote: HTMLCanvasElement;
   /** 插入的圖片（在筆跡下面） */
   images: PageImages;
+  /** 套索選取框（在輸入層裡） */
+  lassoBox: HTMLDivElement;
   dpr: number;
+}
+
+/** 套索選取：某一頁上選到的筆畫與圖片 */
+interface Selection {
+  index: number;
+  pageId: string;
+  strokes: Set<string>;
+  images: Set<string>;
 }
 
 /** 其他裝置正在畫的筆畫（透過 awareness 即時收到） */
@@ -91,6 +102,14 @@ export class InkController implements ImageHost {
   private penSeen = false;
   private remoteStrokes: RemoteLiveStroke[] = [];
   private selectedImage: string | null = null;
+  /** 套索選取 */
+  private selection: Selection | null = null;
+  /** 正在畫的套索 */
+  private lasso: { index: number; pointerId: number; points: [number, number][] } | null = null;
+  /** 拖曳套索選取 */
+  private selDrag: { pointerId: number; start: [number, number]; dx: number; dy: number; moved: boolean } | null = null;
+  /** 拖曳中暫時從頁面上拿起來的筆畫（畫在輸入層上跟著移動） */
+  private lifted = new Set<string>();
   /** 圖片檔 → 網址（object URL）；null = 讀取中或讀不到（之後重試） */
   private imageUrls = new Map<string, string | null>();
   /** 已經解碼的圖片（畫縮圖用） */
@@ -110,11 +129,12 @@ export class InkController implements ImageHost {
     private onLive?: (live: RemoteLiveStroke | null) => void,
     /** 讀取圖片檔（檔案庫） */
     private getBlob?: (fileId: string) => Promise<Uint8Array | undefined>,
-    /** 選取的圖片改變 */
-    private onSelect?: (id: string | null) => void,
+    /** 選取改變：圖片代號、"lasso"（套索選取）或 null */
+    private onSelect?: (selection: string | null) => void,
   ) {
     this.offChange = nb.onChange(() => {
       this.pageCache.clear();
+      this.pruneSelection();
       this.redrawAll();
     });
   }
@@ -152,6 +172,7 @@ export class InkController implements ImageHost {
     this.applyTool(l);
     this.redraw(index);
     this.drawRemote(index);
+    this.renderLasso(index);
   }
 
   // ── 圖片（ImageHost） ───────────────────────────────
@@ -165,15 +186,240 @@ export class InkController implements ImageHost {
   }
 
   select(id: string | null) {
+    if (id) this.setSelection(null);
     if (id === this.selectedImage) return;
     this.selectedImage = id;
     for (const l of this.layers.values()) l.images.render();
-    this.onSelect?.(id);
+    this.onSelect?.(id ?? (this.selection ? "lasso" : null));
   }
 
-  /** 刪除選取的圖片（Delete 鍵） */
-  deleteSelectedImage(): boolean {
+  /** 取消所有選取（Esc） */
+  clearSelection() {
+    this.select(null);
+    this.setSelection(null);
+  }
+
+  /** 刪除選取的圖片或套索選取的內容（Delete 鍵） */
+  deleteSelection(): boolean {
+    const sel = this.selection;
+    if (sel) {
+      this.setSelection(null);
+      this.nb.doc.transact(() => {
+        this.nb.removeStrokes(sel.pageId, sel.strokes);
+        this.nb.removeImages(sel.images);
+      }, this.origin);
+      return true;
+    }
     for (const l of this.layers.values()) if (l.images.deleteSelected()) return true;
+    return false;
+  }
+
+  /** 套索選取的筆畫改顏色 */
+  recolorSelection(color: string) {
+    const sel = this.selection;
+    if (!sel || !sel.strokes.size) return;
+    this.nb.doc.transact(() => this.nb.updateStrokes(sel.pageId, sel.strokes, (s) => ({ ...s, color })), this.origin);
+  }
+
+  // ── 套索選取 ─────────────────────────────────────────
+
+  private setSelection(sel: Selection | null) {
+    const old = this.selection;
+    this.selection = sel && (sel.strokes.size || sel.images.size) ? sel : null;
+    if (old) this.renderLasso(old.index);
+    if (this.selection) this.renderLasso(this.selection.index);
+    if (old || this.selection) this.onSelect?.(this.selection ? "lasso" : this.selectedImage);
+  }
+
+  /** 筆記本改變後（例如另一台裝置刪了某筆），拿掉已經不存在的項目 */
+  private pruneSelection() {
+    const sel = this.selection;
+    if (!sel) return;
+    if (!this.nb.getPage(sel.pageId)) return this.setSelection(null);
+    const strokes = new Set(this.pageStrokes(sel.pageId).map((s) => s.id));
+    const images = new Set(this.nb.images(sel.pageId).map((i) => i.id));
+    const next = { ...sel, strokes: new Set([...sel.strokes].filter((id) => strokes.has(id))), images: new Set([...sel.images].filter((id) => images.has(id))) };
+    if (next.strokes.size !== sel.strokes.size || next.images.size !== sel.images.size) this.setSelection(next);
+  }
+
+  /** 選取範圍（PDF 座標 [x0, y0, x1, y1]），含筆畫粗細 */
+  private selectionBounds(sel: Selection, dx = 0, dy = 0): [number, number, number, number] | null {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const { id, stroke } of this.pageStrokes(sel.pageId)) {
+      if (!sel.strokes.has(id)) continue;
+      const [a, b, c, d] = this.decoded.get(id)?.bbox ?? bounds(stroke);
+      const m = stroke.size / 2 + 2;
+      x0 = Math.min(x0, a - m); y0 = Math.min(y0, b - m); x1 = Math.max(x1, c + m); y1 = Math.max(y1, d + m);
+    }
+    for (const img of this.nb.images(sel.pageId)) {
+      if (!sel.images.has(img.id)) continue;
+      x0 = Math.min(x0, img.x); y0 = Math.min(y0, img.y); x1 = Math.max(x1, img.x + img.width); y1 = Math.max(y1, img.y + img.height);
+    }
+    return x0 === Infinity ? null : [x0 + dx, y0 + dy, x1 + dx, y1 + dy];
+  }
+
+  private renderLasso(index: number) {
+    const l = this.layers.get(index);
+    if (!l) return;
+    const sel = this.selection;
+    const box = sel && sel.index === index && this.selectMode() ? this.selectionBounds(sel, this.selDrag?.dx, this.selDrag?.dy) : null;
+    if (!box) {
+      l.lassoBox.hidden = true;
+      return;
+    }
+    const [ax, ay] = l.view.viewport.convertToViewportPoint(box[0], box[1]);
+    const [bx, by] = l.view.viewport.convertToViewportPoint(box[2], box[3]);
+    Object.assign(l.lassoBox.style, {
+      left: `${Math.min(ax, bx)}px`,
+      top: `${Math.min(ay, by)}px`,
+      width: `${Math.abs(bx - ax)}px`,
+      height: `${Math.abs(by - ay)}px`,
+    });
+    l.lassoBox.querySelector<HTMLElement>(".lasso-select__colors")!.hidden = !sel!.strokes.size;
+    l.lassoBox.hidden = false;
+  }
+
+  private insideSelection(index: number, [x, y]: [number, number]): boolean {
+    const sel = this.selection;
+    if (!sel || sel.index !== index) return false;
+    const b = this.selectionBounds(sel);
+    return !!b && x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3];
+  }
+
+  /** 畫完套索：選取大部分在圈內的筆畫，以及中心在圈內的圖片 */
+  private finishLasso(l: PageLayers) {
+    const lasso = this.lasso;
+    this.lasso = null;
+    this.clearLive(l);
+    const pageId = lasso && this.pageIdAt(lasso.index);
+    if (!lasso || !pageId || lasso.points.length < 3) return;
+    const poly = lasso.points;
+    const strokes = new Set<string>();
+    for (const { id, stroke } of this.pageStrokes(pageId)) {
+      const pts = stroke.points;
+      let inside = 0;
+      for (const [x, y] of pts) if (pointInPolygon(x, y, poly)) inside++;
+      if (inside > 0 && inside >= pts.length / 2) strokes.add(id);
+    }
+    const images = new Set(
+      this.nb.images(pageId).filter((i) => pointInPolygon(i.x + i.width / 2, i.y + i.height / 2, poly)).map((i) => i.id),
+    );
+    this.setSelection({ index: lasso.index, pageId, strokes, images });
+  }
+
+  private drawLasso(l: PageLayers) {
+    const lasso = this.lasso;
+    if (!lasso) return;
+    const ctx = this.clearLive(l);
+    this.setTransform(ctx, l);
+    const scale = l.view.viewport.scale || 1;
+    ctx.lineWidth = 1.5 / scale;
+    ctx.setLineDash([6 / scale, 4 / scale]);
+    ctx.strokeStyle = "#2563eb";
+    ctx.fillStyle = "rgba(37, 99, 235, 0.06)";
+    ctx.beginPath();
+    lasso.points.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  /** 拖曳套索選取時：拿起來的筆畫畫在輸入層上，跟著移動 */
+  private drawLifted(l: PageLayers) {
+    const sel = this.selection;
+    const drag = this.selDrag;
+    if (!sel || !drag) return;
+    const ctx = this.clearLive(l);
+    this.setTransform(ctx, l);
+    ctx.translate(drag.dx, drag.dy);
+    for (const { id, stroke } of this.pageStrokes(sel.pageId)) {
+      if (!sel.strokes.has(id)) continue;
+      ctx.globalAlpha = stroke.tool === "highlighter" ? HIGHLIGHTER_ALPHA : 1;
+      ctx.fillStyle = stroke.color;
+      ctx.fill(this.pathFor(id, stroke));
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /** 選取工具的按下：選取框內 → 拖曳選取；圖片 → 選取圖片；空白處 → 開始畫套索 */
+  private selectDown(l: PageLayers, e: PointerEvent): boolean {
+    const index = l.view.id - 1;
+    const p = this.toPdf(l, e);
+    if (this.insideSelection(index, [p[0], p[1]])) {
+      this.selDrag = { pointerId: e.pointerId, start: [p[0], p[1]], dx: 0, dy: 0, moved: false };
+      for (const id of this.selection!.strokes) this.lifted.add(id);
+      return true;
+    }
+    if (l.images.pointerDown(e)) return true;
+    this.setSelection(null);
+    // 「只用觸控筆」時手指在空白處是捲動，不畫套索
+    if (e.pointerType === "touch" && this.settings().penOnly) return false;
+    this.lasso = { index, pointerId: e.pointerId, points: [[p[0], p[1]]] };
+    return true;
+  }
+
+  private selectMove(l: PageLayers, e: PointerEvent) {
+    if (this.lasso && e.pointerId === this.lasso.pointerId) {
+      const events = typeof e.getCoalescedEvents === "function" ? e.getCoalescedEvents() : [];
+      for (const ev of events.length ? events : [e]) {
+        const [x, y] = this.toPdf(l, ev);
+        this.lasso.points.push([x, y]);
+      }
+      this.drawLasso(l);
+      return;
+    }
+    const drag = this.selDrag;
+    if (drag && e.pointerId === drag.pointerId) {
+      const [x, y] = this.toPdf(l, e);
+      drag.dx = x - drag.start[0];
+      drag.dy = y - drag.start[1];
+      if (!drag.moved && Math.hypot(drag.dx, drag.dy) < 1) return;
+      if (!drag.moved) {
+        drag.moved = true;
+        this.redraw(l.view.id - 1); // 拿起來：頁面上先不畫這些筆畫
+      }
+      this.drawLifted(l);
+      l.images.setGroupOffset(this.selection!.images, drag.dx, drag.dy);
+      this.renderLasso(l.view.id - 1);
+      return;
+    }
+    l.images.pointerMove(e);
+  }
+
+  /** 回傳是否處理了這次放開 */
+  private selectUp(l: PageLayers, e: PointerEvent): boolean {
+    if (this.lasso && e.pointerId === this.lasso.pointerId) {
+      if (e.type === "pointercancel") {
+        this.lasso = null;
+        this.clearLive(l);
+      } else {
+        this.finishLasso(l);
+      }
+      return true;
+    }
+    const drag = this.selDrag;
+    const sel = this.selection;
+    if (drag && e.pointerId === drag.pointerId) {
+      this.selDrag = null;
+      this.lifted.clear();
+      this.clearLive(l);
+      l.images.setGroupOffset(null);
+      if (sel && drag.moved && e.type !== "pointercancel") {
+        const { dx, dy } = drag;
+        this.nb.doc.transact(() => {
+          this.nb.updateStrokes(sel.pageId, sel.strokes, (s) => ({ ...s, points: s.points.map(([x, y, p]) => [x + dx, y + dy, p]) }));
+          for (const id of sel.images) {
+            const img = this.nb.getImage(id);
+            if (img) this.nb.updateImage(id, { x: img.x + dx, y: img.y + dy });
+          }
+        }, this.origin);
+      } else {
+        this.redraw(l.view.id - 1);
+      }
+      this.renderLasso(l.view.id - 1);
+      return true;
+    }
     return false;
   }
 
@@ -211,10 +457,11 @@ export class InkController implements ImageHost {
         this.imageUrl(img.fileId);
         continue;
       }
-      // 圖片的 (0,0) 在左上：PDF 的 (x, y + h)，往下是 PDF 的 -y
+      // 原圖座標 → PDF（含旋轉）→ 縮圖
+      const { naturalWidth, naturalHeight, matrix } = imagePlacement(img);
       ctx.setTransform(a, b, c, d, e, f);
-      ctx.transform(1, 0, 0, -1, img.x, img.y + img.height);
-      ctx.drawImage(el, 0, 0, img.width, img.height);
+      ctx.transform(...matrix);
+      ctx.drawImage(el, 0, 0, naturalWidth, naturalHeight);
     }
     ctx.restore();
   }
@@ -288,6 +535,10 @@ export class InkController implements ImageHost {
 
   /** 顯示用的 PDF 換了（插頁、刪頁等），舊的頁面元素都作廢 */
   reset() {
+    this.selection = null;
+    this.lasso = null;
+    this.selDrag = null;
+    this.lifted.clear();
     for (const l of this.layers.values()) this.release(l);
     this.layers.clear();
     this.pageCache.clear();
@@ -295,7 +546,7 @@ export class InkController implements ImageHost {
 
   /** 工具改變時更新游標與輸入層 */
   refreshTool() {
-    if (!this.selectMode()) this.select(null);
+    if (!this.selectMode()) this.clearSelection();
     for (const l of this.layers.values()) {
       this.applyTool(l);
       l.images.render();
@@ -304,6 +555,7 @@ export class InkController implements ImageHost {
 
   redrawAll() {
     for (const index of this.layers.keys()) this.redraw(index);
+    if (this.selection) this.renderLasso(this.selection.index);
   }
 
   private createLayers(view: PageView): PageLayers {
@@ -325,9 +577,21 @@ export class InkController implements ImageHost {
     live.className = "ink-input__live";
     // 低延遲模式：正在畫的線不必等整個畫面合成（支援的瀏覽器才有效）
     live.getContext("2d", { desynchronized: true });
-    input.append(live, images.overlay);
+    const lassoBox = document.createElement("div");
+    lassoBox.className = "lasso-select";
+    lassoBox.hidden = true;
+    lassoBox.innerHTML =
+      '<span class="lasso-select__actions"><span class="lasso-select__colors">' +
+      PEN_COLORS.map((c) => `<button type="button" class="lasso-select__color" data-color="${c}" style="background:${c}" aria-label="改成這個顏色"></button>`).join("") +
+      '</span><button type="button" class="lasso-select__delete">刪除</button></span>';
+    for (const btn of lassoBox.querySelectorAll<HTMLButtonElement>("button")) {
+      // 按鈕：不要讓輸入層把這次點擊當成「在選取框外按下」
+      btn.addEventListener("pointerdown", (e) => e.stopPropagation());
+      btn.addEventListener("click", () => (btn.dataset.color ? this.recolorSelection(btn.dataset.color) : this.deleteSelection()));
+    }
+    input.append(live, images.overlay, lassoBox);
 
-    const l: PageLayers = { view, root, highlight, pen, input, live, remote, images, dpr: 1 };
+    const l: PageLayers = { view, root, highlight, pen, input, live, remote, images, lassoBox, dpr: 1 };
     input.addEventListener("pointerdown", (e) => this.onDown(l, e));
     input.addEventListener("pointermove", (e) => this.onMove(l, e));
     input.addEventListener("pointerup", (e) => this.onUp(l, e));
@@ -340,9 +604,12 @@ export class InkController implements ImageHost {
       const touches = Array.from(e.changedTouches);
       if (touches.some((t) => (t as Touch & { touchType?: string }).touchType === "stylus")) {
         e.preventDefault();
-      } else if (tool === "select" && e.type === "touchstart" && e.touches.length === 1 && l.images.hits(touches[0].clientX, touches[0].clientY, e.target)) {
-        // 選取工具：手指按在圖片上 → 拖曳圖片；按在空白處 → 照常捲動（「只用觸控筆」時）
-        e.preventDefault();
+      } else if (tool === "select" && e.type === "touchstart" && e.touches.length === 1) {
+        // 選取工具：手指按在圖片或套索選取框上 → 拖曳；按在空白處 → 照常捲動（「只用觸控筆」時）
+        const t = touches[0];
+        const rect = l.input.getBoundingClientRect();
+        const [x, y] = l.view.viewport.convertToPdfPoint(t.clientX - rect.left, t.clientY - rect.top);
+        if (l.images.hits(t.clientX, t.clientY, e.target) || this.insideSelection(l.view.id - 1, [x, y])) e.preventDefault();
       }
     };
     input.addEventListener("touchstart", stopStylus, { passive: false });
@@ -399,7 +666,7 @@ export class InkController implements ImageHost {
     if (!pageId) return;
     hl.globalAlpha = HIGHLIGHTER_ALPHA;
     for (const { id, stroke } of this.pageStrokes(pageId)) {
-      if (this.erasing.has(id)) continue;
+      if (this.erasing.has(id) || this.lifted.has(id)) continue;
       const ctx = stroke.tool === "highlighter" ? hl : pen;
       ctx.fillStyle = stroke.color;
       ctx.fill(this.pathFor(id, stroke));
@@ -412,7 +679,12 @@ export class InkController implements ImageHost {
     if (!list) {
       list = this.nb.strokes(pageId);
       for (const { id, stroke } of list) {
-        if (!this.decoded.has(id)) this.decoded.set(id, { stroke, bbox: bounds(stroke) });
+        const prev = this.decoded.get(id);
+        // 同一個代號的筆畫被修改過（套索移動、改顏色）：外框與範圍要重算
+        if (!prev || !sameStroke(prev.stroke, stroke)) {
+          this.decoded.set(id, { stroke, bbox: bounds(stroke) });
+          this.paths.delete(id);
+        }
       }
       this.pageCache.set(pageId, list);
     }
@@ -463,8 +735,8 @@ export class InkController implements ImageHost {
     }
     if (e.button !== 0 && e.pointerType === "mouse") return;
     if (s.tool === "select") {
-      // 選取工具：點圖片選取、拖曳移動，拉角縮放
-      if (l.images.pointerDown(e)) {
+      // 選取工具：套索圈選、拖曳選取；點圖片選取、拖曳移動，拉角縮放
+      if (this.selectDown(l, e)) {
         e.preventDefault();
         l.input.setPointerCapture(e.pointerId);
       }
@@ -496,7 +768,7 @@ export class InkController implements ImageHost {
   private onMove(l: PageLayers, e: PointerEvent) {
     const s = this.settings();
     if (s.tool === "read") return;
-    if (s.tool === "select") return l.images.pointerMove(e);
+    if (s.tool === "select") return this.selectMove(l, e);
     if (!this.active) {
       if (s.tool === "eraser") this.drawEraserCursor(l, e);
       return;
@@ -520,6 +792,7 @@ export class InkController implements ImageHost {
   }
 
   private onUp(l: PageLayers, e: PointerEvent) {
+    if (this.selectUp(l, e)) return;
     if (l.images.dragging) return l.images.pointerUp(e, e.type === "pointercancel");
     const active = this.active;
     if (!active || e.pointerId !== active.pointerId) return;
@@ -664,4 +937,22 @@ export function paintStrokes(ctx: CanvasRenderingContext2D, transform: number[],
     }
   }
   ctx.restore();
+}
+
+/** 點是否在多邊形內（射線法） */
+function pointInPolygon(x: number, y: number, poly: [number, number][]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i];
+    const [xj, yj] = poly[j];
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/** 是否是同一筆的同一個版本（修改過的筆畫：顏色、粗細或位置一定不同） */
+function sameStroke(a: Stroke, b: Stroke): boolean {
+  if (a.color !== b.color || a.size !== b.size || a.tool !== b.tool || a.points.length !== b.points.length) return false;
+  const n = a.points.length - 1;
+  return a.points[0][0] === b.points[0][0] && a.points[0][1] === b.points[0][1] && a.points[n][0] === b.points[n][0] && a.points[n][1] === b.points[n][1];
 }

@@ -45,7 +45,7 @@ const TOOLS: { tool: Tool; label: string; key: string; icon: JSX.Element }[] = [
   },
   {
     tool: "select",
-    label: "選取圖片（移動、縮放、刪除）",
+    label: "選取（圈選筆跡與圖片、移動、縮放、刪除）",
     key: "S",
     icon: <path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4M9 9h6v6H9Z" />,
   },

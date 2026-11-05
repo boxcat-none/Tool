@@ -1,9 +1,18 @@
 import { loadPdf } from "@tool/core";
 import { flattenInk, writeInk, type Stroke } from "@tool/core/ink";
 import { normalizeRotation } from "@tool/core/rotation";
-import { degrees, PDFDocument, type PDFImage, type PDFPage } from "pdf-lib";
+import {
+  concatTransformationMatrix,
+  degrees,
+  drawObject,
+  PDFDocument,
+  popGraphicsState,
+  pushGraphicsState,
+  type PDFImage,
+  type PDFPage,
+} from "pdf-lib";
 import type { BlobStore } from "./blobs";
-import type { Notebook } from "./notebook";
+import { imagePlacement, type Notebook } from "./notebook";
 import { readOutline, writeOutline, type OutlineItem } from "./outline";
 import { PaperPainter } from "./paper";
 
@@ -152,7 +161,15 @@ export async function exportPdf(nb: Notebook, blobs: BlobStore, options: ExportO
           embed = isPng(bytes) ? await out.embedPng(bytes) : await out.embedJpg(bytes);
           embedded.set(img.fileId, embed);
         }
-        page.drawImage(embed, { x: img.x, y: img.y, width: img.width, height: img.height });
+        // 圖片 XObject 畫在單位正方形（左下為原點）；換算成「原圖座標 → PDF」的矩陣（含旋轉）
+        const { naturalWidth: nw, naturalHeight: nh, matrix: [a, b, c, d, e, f] } = imagePlacement(img);
+        const name = page.node.newXObject("Image", embed.ref);
+        page.pushOperators(
+          pushGraphicsState(),
+          concatTransformationMatrix(a * nw, b * nw, -c * nh, -d * nh, c * nh + e, d * nh + f),
+          drawObject(name),
+          popGraphicsState(),
+        );
       }
     }
   }

@@ -178,8 +178,8 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
   /** 連上的其他裝置 */
   const [peers, setPeers] = useState<Peer[]>(() => syncHub.list(notebookId));
   const [inviteOpen, setInviteOpen] = useState(false);
-  /** 選取的圖片（「選取」工具） */
-  const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  /** 「選取」工具選到的東西：圖片代號、"lasso"（套索選取）或 null */
+  const [selection, setSelection] = useState<string | null>(null);
   const imageInput = useRef<HTMLInputElement>(null);
 
   const [searchOpen, setSearchOpen] = useState(false);
@@ -305,7 +305,7 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
         setToast({ text: "偵測到觸控筆，已開啟「只用觸控筆」：手指用來捲動和縮放。" });
       }, (live) => awarenessRef.current?.setLocalStateField("live", live && encodeLive(live)),
       (fileId) => library.blobs.get(fileId),
-      setSelectedImage);
+      setSelection);
       inkCtl.current = ctl;
       const undo = notebook.createUndoManager(LOCAL);
       undoRef.current = undo;
@@ -698,7 +698,11 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
       try {
         const img = await prepareNoteImage(file, file.name || "圖片");
         const fileId = await library.blobs.put(img.bytes);
-        const size = defaultImageSize(img, info);
+        // 頁面有旋轉（例如掃描檔的橫向頁）時，圖片反方向轉回來，畫面上看起來才是正的
+        const turned = info.rotation === 90 || info.rotation === 270;
+        const shown = defaultImageSize(img, turned ? { width: info.height, height: info.width } : info);
+        const size = turned ? { width: shown.height, height: shown.width } : shown;
+        const rotation = ((360 - info.rotation) % 360) as 0 | 90 | 180 | 270;
         // 一次插入多張時稍微錯開
         const offset = i * 18;
         notebook.doc.transact(() => {
@@ -708,6 +712,7 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
             x: Math.max(0, (info.width - size.width) / 2 + offset),
             y: Math.max(0, (info.height - size.height) / 2 - offset),
             ...size,
+            rotation,
           });
         }, LOCAL);
       } catch (e) {
@@ -819,11 +824,11 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
       } else if (!typing && mod && (((e.key === "z" || e.key === "Z") && e.shiftKey) || e.key === "y" || e.key === "Y")) {
         e.preventDefault();
         undoRef.current?.redo();
-      } else if (!typing && !mod && (e.key === "Delete" || e.key === "Backspace") && selectedImage) {
+      } else if (!typing && !mod && (e.key === "Delete" || e.key === "Backspace") && selection) {
         e.preventDefault();
-        inkCtl.current?.deleteSelectedImage();
-      } else if (!typing && e.key === "Escape" && selectedImage) {
-        inkCtl.current?.select(null);
+        inkCtl.current?.deleteSelection();
+      } else if (!typing && e.key === "Escape" && selection) {
+        inkCtl.current?.clearSelection();
       } else if (!typing && !mod && !e.altKey && ["v", "p", "h", "e", "s"].includes(e.key.toLowerCase())) {
         const tools = { v: "read", p: "pen", h: "highlighter", e: "eraser", s: "select" } as const;
         setInk((s) => ({ ...s, tool: tools[e.key.toLowerCase() as keyof typeof tools] }));
