@@ -1,0 +1,55 @@
+const env = require("./lib/env.cjs");
+const fs = require("fs"); const path = require("path");
+const W = "http://127.0.0.1:4444"; let sid; let failed = false;
+async function wd(m, u, b) { const r = await fetch(W + u, { method: m, headers: { "content-type": "application/json" }, body: b && JSON.stringify(b) }); const j = await r.json(); if (j.value && j.value.error) throw new Error(j.value.message); return j.value; }
+const exec = (script, args = []) => wd("POST", `/session/${sid}/execute/sync`, { script, args });
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function waitFor(fn, label, t = 30000) { const s = Date.now(); while (Date.now() - s < t) { try { const v = await fn(); if (v) return v; } catch {} await sleep(250); } throw new Error("timeout " + label); }
+function check(ok, label, v) { console.log(`${ok ? "PASS" : "FAIL"} ${label}${v !== undefined ? ": " + JSON.stringify(v) : ""}`); if (!ok) failed = true; }
+const inject = (file, name) => exec(`const input = document.querySelector(".drop input[type=file]"); const bin = atob(arguments[0]); const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const dt = new DataTransfer(); dt.items.add(new File([bytes], arguments[1], { type: "application/pdf" })); input.files = dt.files; input.dispatchEvent(new Event("change", { bubbles: true }));`, [fs.readFileSync(file).toString("base64"), name]);
+const handleChoice = async () => { await sleep(800); await exec(`const b = [...document.querySelectorAll(".modal button")].find((b) => b.textContent === "建立新的筆記本"); if (b) b.click();`); };
+const setValue = (sel, v) => exec(`const el = document.querySelector(arguments[0]); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set; set.call(el, arguments[1]); el.dispatchEvent(new Event("input", { bubbles: true }));`, [sel, v]);
+const click = (text) => exec(`const b = [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === arguments[0] || b.getAttribute("aria-label") === arguments[0]); if (!b) throw new Error("no button " + arguments[0]); b.click();`, [text]);
+(async () => {
+  const W2 = env.FIX;
+  sid = (await wd("POST", "/session", { capabilities: { alwaysMatch: { "tauri:options": { application: env.DESKTOP_APP } } } })).sessionId;
+  await waitFor(() => exec("return document.body.innerText.includes('閱讀與筆記')"), "app");
+  await exec(`window.__links = []; window.__e2e = { openUrl: (u) => window.__links.push(u) };`);
+  await click("閱讀與筆記");
+  await waitFor(() => exec("return !!document.querySelector('.drop input[type=file]')"), "drop");
+  await inject(path.join(W2, "目錄.pdf"), "目錄.pdf");
+  await handleChoice();
+  await waitFor(() => exec("return document.querySelectorAll('.side-thumb img').length > 0"), "thumbs");
+  check(true, "desktop: sidebar thumbnails render");
+  await exec(`[...document.querySelectorAll("[role=tab]")].find((t) => t.textContent === "目錄").click()`);
+  const titles = await waitFor(() => exec("const t = [...document.querySelectorAll('.outline__title')].map(e => e.textContent); return t.length ? t : null"), "outline");
+  check(titles.includes("第二章 結尾"), "desktop: outline", titles);
+  await click("第二章 結尾");
+  await waitFor(() => exec("return document.querySelector('.reader__page').value === '10'"), "page 10");
+  check(true, "desktop: outline navigation");
+  await click("搜尋（Ctrl+F）");
+  await waitFor(() => exec("return !!document.querySelector('.reader__search-input')"), "search");
+  await setValue(".reader__search-input", "needle");
+  const count = await waitFor(() => exec("const t = document.querySelector('.reader__search-count').textContent; return /\\/ 2/.test(t) ? t : null"), "count");
+  check(true, "desktop: search", count);
+  await click("第 1 頁").catch(() => {});
+  await exec(`[...document.querySelectorAll("[role=tab]")].find((t) => t.textContent === "頁面").click()`); await click("第 1 頁");
+  await waitFor(() => exec("return !!document.querySelector(\".annotationLayer a[href^='https://example.com']\")"), "link");
+  await exec(`document.querySelector(".annotationLayer a[href^='https://example.com']").click()`);
+  await sleep(500);
+  const links = await exec("return window.__links");
+  check(links[0] === "https://example.com/", "desktop: external link → system browser", links);
+  await click("回到書櫃");
+  await waitFor(() => exec("return !!document.querySelector('.drop input[type=file]')"), "drop2");
+  await inject(path.join(W2, "加密.pdf"), "加密.pdf");
+  await handleChoice();
+  await waitFor(() => exec("return document.body.innerText.includes('這個 PDF 有密碼保護')"), "password prompt");
+  await setValue("input[type=password]", "secret123");
+  await click("開啟");
+  await waitFor(() => exec("return document.body.innerText.includes('/ 12')"), "unlocked");
+  check(true, "desktop: password unlock");
+  fs.writeFileSync(path.join(env.out("shots"), "desktop-reader2.png"), Buffer.from(await wd("GET", `/session/${sid}/screenshot`), "base64"));
+  await wd("DELETE", `/session/${sid}`); process.exit(failed ? 1 : 0);
+})().catch(async (e) => { console.error("ERROR", e.message); try { await wd("DELETE", `/session/${sid}`); } catch {} process.exit(1); });

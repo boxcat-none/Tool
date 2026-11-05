@@ -8,7 +8,9 @@
     "build": "pnpm --filter @tool/web build",
     "preview": "pnpm --filter @tool/web preview",
     "test": "pnpm -r test",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "e2e": "bash e2e/run-web.sh",
+    "e2e:desktop": "bash e2e/run-desktop.sh"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
