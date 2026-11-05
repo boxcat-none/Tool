@@ -18,7 +18,7 @@
 
 軟體版和網頁版功能相同（另外多了 Office 轉 PDF），差別在存檔：軟體版會跳出「另存新檔」或「選擇資料夾」對話框，直接存到硬碟，不會打包成 ZIP。
 
-已知限制與待解決項目見 [`docs/backlog.md`](docs/backlog.md)。
+已知限制與待解決項目見 [`docs/backlog.md`](docs/backlog.md)。接手開發請先讀 [`docs/HANDOFF.md`](docs/HANDOFF.md)。
 
 ## 開發
 
@@ -30,6 +30,7 @@ pnpm dev         # 啟動網頁版開發伺服器
 pnpm test        # 執行核心邏輯測試
 pnpm typecheck   # TypeScript 型別檢查
 pnpm build       # 建置網頁版到 apps/web/dist
+pnpm e2e         # 瀏覽器 e2e 測試（需要 Playwright，見 e2e/README.md）
 ```
 
 軟體版另外需要 [Rust](https://rustup.rs/) 和 [Tauri 的系統套件](https://tauri.app/start/prerequisites/)：
