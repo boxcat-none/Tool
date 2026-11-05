@@ -30,6 +30,12 @@ export function attachTouchGestures(
   { onPinchStart }: { onPinchStart?: () => void } = {},
 ): () => void {
   let pinch: { startDist: number; startScale: number; lastMid: [number, number] } | null = null;
+  /**
+   * 觸控事件永遠送到「手指一開始碰到的元素」。縮放時 pdf.js 會移除、重建頁面裡的元素，
+   * 被移除的元素收到的事件不會再傳到容器，所以縮放開始時也直接在那些元素上監聽。
+   */
+  let targets: EventTarget[] = [];
+  const handled = new WeakSet<Event>();
 
   const measure = (a: Touch, b: Touch) => ({
     dist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY),
@@ -42,12 +48,33 @@ export function attachTouchGestures(
       e.preventDefault();
       const { dist, mid } = measure(f[0], f[1]);
       pinch = { startDist: Math.max(dist, 1), startScale: getViewer()!.currentScale, lastMid: mid };
+      watchTargets(f.map((t) => t.target));
       onPinchStart?.();
     }
   };
 
+  const watchTargets = (list: EventTarget[]) => {
+    for (const t of list) {
+      if (targets.includes(t) || t === container) continue;
+      t.addEventListener("touchmove", onMove as EventListener, { passive: false });
+      t.addEventListener("touchend", onEnd as EventListener);
+      t.addEventListener("touchcancel", onEnd as EventListener);
+      targets.push(t);
+    }
+  };
+
+  const unwatchTargets = () => {
+    for (const t of targets) {
+      t.removeEventListener("touchmove", onMove as EventListener);
+      t.removeEventListener("touchend", onEnd as EventListener);
+      t.removeEventListener("touchcancel", onEnd as EventListener);
+    }
+    targets = [];
+  };
+
   const onMove = (e: TouchEvent) => {
-    if (!pinch) return;
+    if (!pinch || handled.has(e)) return;
+    handled.add(e);
     const f = fingers(e.touches);
     const viewer = getViewer();
     if (f.length < 2 || !viewer) return;
@@ -66,7 +93,10 @@ export function attachTouchGestures(
   };
 
   const onEnd = (e: TouchEvent) => {
-    if (pinch && fingers(e.touches).length < 2) pinch = null;
+    if (pinch && fingers(e.touches).length < 2) {
+      pinch = null;
+      unwatchTargets();
+    }
   };
 
   // Safari 的整頁縮放手勢
@@ -80,6 +110,7 @@ export function attachTouchGestures(
   container.addEventListener("gesturestart", onGesture);
   container.addEventListener("gesturechange", onGesture);
   return () => {
+    unwatchTargets();
     container.removeEventListener("touchstart", onStart, { capture: true });
     container.removeEventListener("touchmove", onMove, { capture: true });
     container.removeEventListener("touchend", onEnd, { capture: true });

@@ -1,0 +1,19 @@
+{
+  "name": "PDF 工具箱",
+  "short_name": "PDF 工具箱",
+  "description": "閱讀與手寫 PDF 筆記、合併分割等 PDF 工具。所有處理都在你的裝置上完成。",
+  "lang": "zh-Hant",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f5f3",
+  "theme_color": "#f6f5f3",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "file_handlers": [
+    { "action": "./", "accept": { "application/pdf": [".pdf"], "application/octet-stream": [".guganote"] } }
+  ]
+}

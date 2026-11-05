@@ -1,7 +1,10 @@
 import react from "@vitejs/plugin-react";
-import { cpSync, createReadStream, existsSync, statSync } from "node:fs";
+import { cpSync, createReadStream, existsSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { basename, dirname, join, normalize } from "node:path";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 
 /**
@@ -38,8 +41,42 @@ function pdfjsAssets(): Plugin {
   };
 }
 
+/**
+ * 離線用的 Service Worker（dist/sw.js）。建置時把所有程式檔列進「預先快取」清單；
+ * pdf.js 的字型對照表等資源很多（3.6 MB），用到才快取。
+ * 版本號由檔案清單的雜湊決定，程式更新後舊快取會被清掉。
+ */
+function serviceWorker(): Plugin {
+  return {
+    name: "service-worker",
+    apply: "build",
+    writeBundle(options) {
+      const out = options.dir ?? "dist";
+      const files: string[] = [];
+      const walk = (dir: string, prefix = "") => {
+        for (const name of readdirSync(join(out, dir))) {
+          const rel = prefix ? `${prefix}/${name}` : name;
+          if (statSync(join(out, dir, name)).isDirectory()) {
+            if (rel !== "pdfjs") walk(join(dir, name), rel);
+          } else if (rel !== "sw.js" && !rel.endsWith(".map")) {
+            files.push(rel);
+          }
+        }
+      };
+      walk("");
+      files.sort();
+      const version = createHash("sha256").update(files.join("\n")).digest("hex").slice(0, 12);
+      const template = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "src/sw-template.js"), "utf8");
+      writeFileSync(
+        join(out, "sw.js"),
+        template.replace("__VERSION__", version).replace("__PRECACHE__", JSON.stringify(files.map((f) => (f === "index.html" ? "./" : f)))),
+      );
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), pdfjsAssets()],
+  plugins: [react(), pdfjsAssets(), serviceWorker()],
   // 相對路徑，方便部署到 GitHub Pages 子路徑，也能直接給 Tauri 載入
   base: "./",
   worker: { format: "es" },

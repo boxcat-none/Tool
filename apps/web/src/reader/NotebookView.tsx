@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import * as Y from "yjs";
 import { PageThumb } from "../components/PageThumb";
 import * as desktop from "../lib/desktop";
+import { MAX_PAGE_CANVAS_PIXELS } from "../lib/device";
 import type { Library, NotebookMeta } from "../lib/library";
 import { notebookPdf, WRONG_PASSWORD } from "../lib/pdf";
 import { loadPdfViewer, openPdf, type OpenedPdf } from "../lib/pdfjs";
@@ -193,7 +194,7 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
         linkService,
         findController,
         textLayerMode: 1,
-        maxCanvasPixels: 16_000_000,
+        maxCanvasPixels: MAX_PAGE_CANVAS_PIXELS,
       });
       linkService.setViewer(viewer);
       let saveTimer: number | undefined;
@@ -281,7 +282,13 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
       setTitle(notebook.title);
       setEncrypted(notebook.pageList.some((p) => p.source.kind === "pdf" && notebook.getFile(p.source.fileId)?.encrypted));
 
-      const ctl = new InkController(notebook, (i) => displayRef.current?.pageIds[i], () => inkRef.current, LOCAL);
+      const ctl = new InkController(notebook, (i) => displayRef.current?.pageIds[i], () => inkRef.current, LOCAL, () => {
+        // 第一次用觸控筆：自動開啟「只用觸控筆」（手指用來捲動、縮放），只做一次，之後尊重使用者的選擇
+        if (inkRef.current.penOnly || loadPref<string>("penAuto", "") === "done") return;
+        savePref("penAuto", "done");
+        setInk((s) => ({ ...s, penOnly: true }));
+        setToast({ text: "偵測到觸控筆，已開啟「只用觸控筆」：手指用來捲動和縮放。" });
+      });
       inkCtl.current = ctl;
       const undo = notebook.createUndoManager(LOCAL);
       undoRef.current = undo;
