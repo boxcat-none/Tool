@@ -1,7 +1,17 @@
 import { strokeOutline, type Stroke } from "@tool/core/ink/core";
-import { imagePlacement, type Notebook } from "@tool/notes/notebook";
+import {
+  imagePlacement,
+  transformImage,
+  transformMatrix,
+  transformPoint,
+  translation,
+  type ClipContent,
+  type ContentTransform,
+  type ImageOrder,
+  type Notebook,
+} from "@tool/notes/notebook";
 import { MAX_INK_CANVAS_PIXELS } from "../lib/device";
-import { PageImages, type ImageHost } from "./images";
+import { fitActions, PageImages, type ImageHost } from "./images";
 import { PEN_COLORS } from "./InkToolbar";
 
 /**
@@ -72,6 +82,30 @@ export interface RemoteLiveStroke {
   stroke: Stroke;
 }
 
+/** 複製下來的選取內容與它原本所在的頁面 */
+export interface CopiedSelection {
+  clip: ClipContent;
+  pageId: string;
+}
+
+/** 拖曳套索選取：移動整個選取框、拉右下角等比例縮放、拉下方把手旋轉 */
+interface SelectionDrag {
+  pointerId: number;
+  mode: "move" | "scale" | "rotate";
+  start: [number, number];
+  /** 縮放：固定不動的對角；旋轉：中心 */
+  anchor: [number, number];
+  /** 縮放：按下時把手所在的角 */
+  handle: [number, number];
+  t: ContentTransform;
+  moved: boolean;
+}
+
+/** 只有筆跡時，旋轉到 0／90／180／270 度附近幾度內就吸附過去 */
+const ROTATE_SNAP = 5;
+const MIN_SCALE = 0.1;
+const MAX_SCALE = 20;
+
 /** 正在畫的筆畫多久送一次給其他裝置（毫秒） */
 const LIVE_INTERVAL = 50;
 
@@ -107,7 +141,9 @@ export class InkController implements ImageHost {
   /** 正在畫的套索 */
   private lasso: { index: number; pointerId: number; points: [number, number][] } | null = null;
   /** 拖曳套索選取 */
-  private selDrag: { pointerId: number; start: [number, number]; dx: number; dy: number; moved: boolean } | null = null;
+  private selDrag: SelectionDrag | null = null;
+  /** 按「複製」（選取框上的按鈕）時呼叫；剪貼簿由閱讀器保管，才能貼到別頁或別本筆記本 */
+  onCopy: ((copied: CopiedSelection) => void) | null = null;
   /** 拖曳中暫時從頁面上拿起來的筆畫（畫在輸入層上跟著移動） */
   private lifted = new Set<string>();
   /** 圖片檔 → 網址（object URL）；null = 讀取中或讀不到（之後重試） */
@@ -221,6 +257,36 @@ export class InkController implements ImageHost {
     this.nb.doc.transact(() => this.nb.updateStrokes(sel.pageId, sel.strokes, (s) => ({ ...s, color })), this.origin);
   }
 
+  /** 複製目前的選取（套索選取或選取的圖片）；沒有選取時回傳 null */
+  copySelection(): CopiedSelection | null {
+    const sel = this.selection;
+    if (sel) return { clip: this.nb.copyContent(sel.pageId, sel.strokes, sel.images), pageId: sel.pageId };
+    const img = this.selectedImage ? this.nb.getImage(this.selectedImage) : undefined;
+    if (img) return { clip: this.nb.copyContent(img.pageId, [], [img.id]), pageId: img.pageId };
+    return null;
+  }
+
+  /** 選取框上的「複製」按鈕 */
+  requestCopy() {
+    const copied = this.copySelection();
+    if (copied) this.onCopy?.(copied);
+  }
+
+  /** 調整選取的圖片（套索選取裡的圖片，或選取的那張）的上下順序 */
+  reorderSelection(order: ImageOrder): boolean {
+    const ids = this.selection ? [...this.selection.images] : this.selectedImage ? [this.selectedImage] : [];
+    if (!ids.length) return false;
+    this.nb.doc.transact(() => this.nb.reorderImages(ids, order), this.origin);
+    return true;
+  }
+
+  /** 選取指定的筆畫與圖片（例如剛貼上的內容） */
+  selectContent(index: number, pageId: string, strokes: Iterable<string>, images: Iterable<string>) {
+    this.select(null);
+    this.pageCache.delete(pageId);
+    this.setSelection({ index, pageId, strokes: new Set(strokes), images: new Set(images) });
+  }
+
   // ── 套索選取 ─────────────────────────────────────────
 
   private setSelection(sel: Selection | null) {
@@ -242,27 +308,46 @@ export class InkController implements ImageHost {
     if (next.strokes.size !== sel.strokes.size || next.images.size !== sel.images.size) this.setSelection(next);
   }
 
-  /** 選取範圍（PDF 座標 [x0, y0, x1, y1]），含筆畫粗細 */
-  private selectionBounds(sel: Selection, dx = 0, dy = 0): [number, number, number, number] | null {
+  /** 選取範圍（PDF 座標 [x0, y0, x1, y1]），含筆畫粗細；`t` = 拖曳中的預覽變換 */
+  private selectionBounds(sel: Selection, t?: ContentTransform): [number, number, number, number] | null {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const add = (x: number, y: number) => {
+      x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+    };
     for (const { id, stroke } of this.pageStrokes(sel.pageId)) {
       if (!sel.strokes.has(id)) continue;
-      const [a, b, c, d] = this.decoded.get(id)?.bbox ?? bounds(stroke);
-      const m = stroke.size / 2 + 2;
-      x0 = Math.min(x0, a - m); y0 = Math.min(y0, b - m); x1 = Math.max(x1, c + m); y1 = Math.max(y1, d + m);
+      const m = (stroke.size / 2) * (t?.scale ?? 1) + 2;
+      if (t && t.angle % 360 !== 0) {
+        // 旋轉中：用轉過之後的點算（把外框轉過去會比實際大很多）
+        for (const [x, y] of stroke.points) {
+          const [px, py] = transformPoint(t, x, y);
+          add(px - m, py - m);
+          add(px + m, py + m);
+        }
+        continue;
+      }
+      let [a, b, c, d] = this.decoded.get(id)?.bbox ?? bounds(stroke);
+      if (t) {
+        [a, b] = transformPoint(t, a, b);
+        [c, d] = transformPoint(t, c, d);
+      }
+      add(Math.min(a, c) - m, Math.min(b, d) - m);
+      add(Math.max(a, c) + m, Math.max(b, d) + m);
     }
-    for (const img of this.nb.images(sel.pageId)) {
-      if (!sel.images.has(img.id)) continue;
-      x0 = Math.min(x0, img.x); y0 = Math.min(y0, img.y); x1 = Math.max(x1, img.x + img.width); y1 = Math.max(y1, img.y + img.height);
+    for (const info of this.nb.images(sel.pageId)) {
+      if (!sel.images.has(info.id)) continue;
+      const img = t ? transformImage(info, t) : info;
+      add(img.x, img.y);
+      add(img.x + img.width, img.y + img.height);
     }
-    return x0 === Infinity ? null : [x0 + dx, y0 + dy, x1 + dx, y1 + dy];
+    return x0 === Infinity ? null : [x0, y0, x1, y1];
   }
 
   private renderLasso(index: number) {
     const l = this.layers.get(index);
     if (!l) return;
     const sel = this.selection;
-    const box = sel && sel.index === index && this.selectMode() ? this.selectionBounds(sel, this.selDrag?.dx, this.selDrag?.dy) : null;
+    const box = sel && sel.index === index && this.selectMode() ? this.selectionBounds(sel, this.selDrag?.t) : null;
     if (!box) {
       l.lassoBox.hidden = true;
       return;
@@ -276,7 +361,10 @@ export class InkController implements ImageHost {
       height: `${Math.abs(by - ay)}px`,
     });
     l.lassoBox.querySelector<HTMLElement>(".lasso-select__colors")!.hidden = !sel!.strokes.size;
+    // 有圖片時「上下順序」才有意義
+    for (const b of l.lassoBox.querySelectorAll<HTMLElement>("[data-order]")) b.hidden = !sel!.images.size;
     l.lassoBox.hidden = false;
+    fitActions(l.lassoBox.querySelector(".lasso-select__actions")!, Math.min(ax, bx), Math.abs(bx - ax), l.view.div.clientWidth, "left");
   }
 
   private insideSelection(index: number, [x, y]: [number, number]): boolean {
@@ -332,7 +420,7 @@ export class InkController implements ImageHost {
     if (!sel || !drag) return;
     const ctx = this.clearLive(l);
     this.setTransform(ctx, l);
-    ctx.translate(drag.dx, drag.dy);
+    ctx.transform(...transformMatrix(drag.t));
     for (const { id, stroke } of this.pageStrokes(sel.pageId)) {
       if (!sel.strokes.has(id)) continue;
       ctx.globalAlpha = stroke.tool === "highlighter" ? HIGHLIGHTER_ALPHA : 1;
@@ -342,12 +430,26 @@ export class InkController implements ImageHost {
     ctx.globalAlpha = 1;
   }
 
-  /** 選取工具的按下：選取框內 → 拖曳選取；圖片 → 選取圖片；空白處 → 開始畫套索 */
+  /** 選取工具的按下：選取框的把手 → 縮放／旋轉；選取框內 → 拖曳選取；圖片 → 選取圖片；空白處 → 開始畫套索 */
   private selectDown(l: PageLayers, e: PointerEvent): boolean {
     const index = l.view.id - 1;
     const p = this.toPdf(l, e);
-    if (this.insideSelection(index, [p[0], p[1]])) {
-      this.selDrag = { pointerId: e.pointerId, start: [p[0], p[1]], dx: 0, dy: 0, moved: false };
+    const start: [number, number] = [p[0], p[1]];
+    const handle = (e.target as HTMLElement | null)?.dataset?.lasso;
+    const sel = this.selection;
+    const box = sel && sel.index === index ? this.selectionBounds(sel) : null;
+    if (box && (handle === "scale" || handle === "rotate")) {
+      const corners: [number, number][] = [[box[0], box[1]], [box[2], box[1]], [box[2], box[3]], [box[0], box[3]]];
+      // 把手在畫面上的右下角（頁面旋轉時對應到不同的 PDF 角）；錨點是它的對角
+      const screen = corners.map(([x, y]) => l.view.viewport.convertToViewportPoint(x, y));
+      const k = screen.reduce((best, [x, y], i) => (x + y > screen[best][0] + screen[best][1] ? i : best), 0);
+      const center: [number, number] = [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2];
+      const anchor = handle === "scale" ? corners[(k + 2) % 4] : center;
+      this.selDrag = { pointerId: e.pointerId, mode: handle, start, anchor, handle: corners[k], t: translation(0, 0), moved: false };
+    } else if (this.insideSelection(index, start)) {
+      this.selDrag = { pointerId: e.pointerId, mode: "move", start, anchor: start, handle: start, t: translation(0, 0), moved: false };
+    }
+    if (this.selDrag) {
       for (const id of this.selection!.strokes) this.lifted.add(id);
       return true;
     }
@@ -372,19 +474,40 @@ export class InkController implements ImageHost {
     const drag = this.selDrag;
     if (drag && e.pointerId === drag.pointerId) {
       const [x, y] = this.toPdf(l, e);
-      drag.dx = x - drag.start[0];
-      drag.dy = y - drag.start[1];
-      if (!drag.moved && Math.hypot(drag.dx, drag.dy) < 1) return;
+      if (!drag.moved && Math.hypot(x - drag.start[0], y - drag.start[1]) < 1) return;
+      drag.t = this.dragTransform(drag, x, y);
       if (!drag.moved) {
         drag.moved = true;
         this.redraw(l.view.id - 1); // 拿起來：頁面上先不畫這些筆畫
       }
       this.drawLifted(l);
-      l.images.setGroupOffset(this.selection!.images, drag.dx, drag.dy);
+      l.images.setGroupTransform(this.selection!.images, drag.t);
       this.renderLasso(l.view.id - 1);
       return;
     }
     l.images.pointerMove(e);
+  }
+
+  /** 拖曳到 (x, y) 時的變換 */
+  private dragTransform(drag: SelectionDrag, x: number, y: number): ContentTransform {
+    const [ax, ay] = drag.anchor;
+    if (drag.mode === "move") return translation(x - drag.start[0], y - drag.start[1]);
+    if (drag.mode === "scale") {
+      // 等比例：把指標投影到「錨點 → 把手」的對角線上
+      const vx = drag.handle[0] - ax, vy = drag.handle[1] - ay;
+      const len2 = vx * vx + vy * vy || 1;
+      const scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, ((x - ax) * vx + (y - ay) * vy) / len2));
+      return { cx: ax, cy: ay, scale, angle: 0, dx: 0, dy: 0 };
+    }
+    // 旋轉：y 向上的座標裡，順時針 = 數學角度變小
+    const a0 = Math.atan2(drag.start[1] - ay, drag.start[0] - ax);
+    const a1 = Math.atan2(y - ay, x - ax);
+    let angle = (-(a1 - a0) * 180) / Math.PI;
+    angle = ((angle % 360) + 360) % 360;
+    const nearest = Math.round(angle / 90) * 90;
+    // 圖片只能轉 90 度的倍數；只有筆跡時自由角度，接近直角時吸附
+    if (this.selection?.images.size || Math.abs(angle - nearest) < ROTATE_SNAP) angle = nearest % 360;
+    return { cx: ax, cy: ay, scale: 1, angle, dx: 0, dy: 0 };
   }
 
   /** 回傳是否處理了這次放開 */
@@ -404,16 +527,11 @@ export class InkController implements ImageHost {
       this.selDrag = null;
       this.lifted.clear();
       this.clearLive(l);
-      l.images.setGroupOffset(null);
-      if (sel && drag.moved && e.type !== "pointercancel") {
-        const { dx, dy } = drag;
-        this.nb.doc.transact(() => {
-          this.nb.updateStrokes(sel.pageId, sel.strokes, (s) => ({ ...s, points: s.points.map(([x, y, p]) => [x + dx, y + dy, p]) }));
-          for (const id of sel.images) {
-            const img = this.nb.getImage(id);
-            if (img) this.nb.updateImage(id, { x: img.x + dx, y: img.y + dy });
-          }
-        }, this.origin);
+      l.images.setGroupTransform(null);
+      const t = drag.t;
+      const identity = t.scale === 1 && t.angle === 0 && t.dx === 0 && t.dy === 0;
+      if (sel && drag.moved && !identity && e.type !== "pointercancel") {
+        this.nb.doc.transact(() => this.nb.transformContent(sel.pageId, sel.strokes, sel.images, t), this.origin);
       } else {
         this.redraw(l.view.id - 1);
       }
@@ -583,11 +701,21 @@ export class InkController implements ImageHost {
     lassoBox.innerHTML =
       '<span class="lasso-select__actions"><span class="lasso-select__colors">' +
       PEN_COLORS.map((c) => `<button type="button" class="lasso-select__color" data-color="${c}" style="background:${c}" aria-label="改成這個顏色"></button>`).join("") +
-      '</span><button type="button" class="lasso-select__delete">刪除</button></span>';
+      '</span><button type="button" class="lasso-select__button" data-action="copy">複製</button>' +
+      '<button type="button" class="lasso-select__button" data-order="front" aria-label="圖片移到最上層">置頂</button>' +
+      '<button type="button" class="lasso-select__button" data-order="back" aria-label="圖片移到最下層">置底</button>' +
+      '<button type="button" class="lasso-select__delete">刪除</button></span>' +
+      '<span class="lasso-select__handle" data-lasso="scale" title="拖曳縮放"></span>' +
+      '<span class="lasso-select__rotate" data-lasso="rotate" title="拖曳旋轉"></span>';
     for (const btn of lassoBox.querySelectorAll<HTMLButtonElement>("button")) {
       // 按鈕：不要讓輸入層把這次點擊當成「在選取框外按下」
       btn.addEventListener("pointerdown", (e) => e.stopPropagation());
-      btn.addEventListener("click", () => (btn.dataset.color ? this.recolorSelection(btn.dataset.color) : this.deleteSelection()));
+      btn.addEventListener("click", () => {
+        if (btn.dataset.color) this.recolorSelection(btn.dataset.color);
+        else if (btn.dataset.action === "copy") this.requestCopy();
+        else if (btn.dataset.order) this.reorderSelection(btn.dataset.order as ImageOrder);
+        else this.deleteSelection();
+      });
     }
     input.append(live, images.overlay, lassoBox);
 
@@ -609,7 +737,8 @@ export class InkController implements ImageHost {
         const t = touches[0];
         const rect = l.input.getBoundingClientRect();
         const [x, y] = l.view.viewport.convertToPdfPoint(t.clientX - rect.left, t.clientY - rect.top);
-        if (l.images.hits(t.clientX, t.clientY, e.target) || this.insideSelection(l.view.id - 1, [x, y])) e.preventDefault();
+        const onHandle = (e.target as HTMLElement | null)?.dataset?.lasso !== undefined;
+        if (onHandle || l.images.hits(t.clientX, t.clientY, e.target) || this.insideSelection(l.view.id - 1, [x, y])) e.preventDefault();
       }
     };
     input.addEventListener("touchstart", stopStylus, { passive: false });
@@ -953,6 +1082,6 @@ function pointInPolygon(x: number, y: number, poly: [number, number][]): boolean
 /** 是否是同一筆的同一個版本（修改過的筆畫：顏色、粗細或位置一定不同） */
 function sameStroke(a: Stroke, b: Stroke): boolean {
   if (a.color !== b.color || a.size !== b.size || a.tool !== b.tool || a.points.length !== b.points.length) return false;
-  const n = a.points.length - 1;
-  return a.points[0][0] === b.points[0][0] && a.points[0][1] === b.points[0][1] && a.points[n][0] === b.points[n][0] && a.points[n][1] === b.points[n][1];
+  // 頭、中間、尾三個點（旋轉、縮放後至少有一個會不同）
+  return [0, a.points.length >> 1, a.points.length - 1].every((i) => a.points[i][0] === b.points[i][0] && a.points[i][1] === b.points[i][1]);
 }

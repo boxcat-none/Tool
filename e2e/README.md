@@ -3,7 +3,7 @@
 用真的瀏覽器（Playwright + Chromium）和真的軟體版（Tauri + WebDriver）操作整個 app。單元測試在各 package 的 `test/`（`pnpm test`）。
 
 ```bash
-pnpm e2e                         # 網頁版全部（建置 → 啟動 preview :4173 → 17 組，約 15 分鐘）
+pnpm e2e                         # 網頁版全部（建置 → 啟動 preview :4173 → 18 組，約 16 分鐘）
 SKIP_BUILD=1 bash e2e/run-web.sh lasso images   # 只跑某幾組、不重新建置
 pnpm e2e:desktop                 # 軟體版（Linux；需要 xvfb-run、tauri-driver、WebKitWebDriver）
 ```
@@ -29,6 +29,7 @@ pnpm e2e:desktop                 # 軟體版（Linux；需要 xvfb-run、tauri-d
 | `memory` `stress` | 300 頁大檔：記憶體上限、各操作耗時（`stress` 是量測，不在預設清單） |
 | `sync` `sync-big` `sync-live` | 裝置連線（WebRTC）：配對、同步、斷線、合併、大檔傳輸、即時筆畫 |
 | `images` `rotate` `lasso` | 插入圖片、旋轉、套索選取 |
+| `clipboard` | 複製貼上（筆跡、圖片、貼到別頁）、圖片上下順序、套索縮放與旋轉（含 iPad 觸控把手） |
 | `iphone-shots` | iPhone 尺寸截圖（人工看，不在預設清單） |
 | `desktop*` | 軟體版：Office 轉 PDF、原生存檔對話框（`VITE_E2E=1` 建置時由 `window.__e2e` 提供結果）、自動儲存 |
 
@@ -38,4 +39,6 @@ pnpm e2e:desktop                 # 軟體版（Linux；需要 xvfb-run、tauri-d
 - 圖片、筆跡層都是 `pointer-events: none`，`elementsFromPoint` 找不到；要驗證疊放順序用截圖取色。
 - 同步太快：要量「對方移動前的位置」時，先量再操作。
 - 這個容器裡 WebRTC 配對約 80 次會逾時 1 次（mDNS），重跑即可；連續失敗才是問題。
+- Windows 本機也能跑網頁版：Playwright 要用新版（pdf.js 用到 `Map.getOrInsertComputed`，舊版 Chromium 沒有，筆記本會一直「開啟中」）；
+  `ink` 匯出檢查要 `pdftoppm`（poppler）。軟體版 e2e 只能在 Linux 跑。
 - 只有本機能連的網路：公開的配對伺服器、STUN 都連不到，測試只走本機。

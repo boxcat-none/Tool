@@ -1,6 +1,7 @@
 import { decodeStroke, encodeStroke, normalizeStroke, type Stroke } from "@tool/core/ink/core";
-import { generateKeyBetween } from "fractional-indexing";
+import { generateKeyBetween, generateNKeysBetween } from "fractional-indexing";
 import * as Y from "yjs";
+import { transformImage, transformStroke, type ContentTransform } from "./transform";
 import type { FileInfo, ImageInfo, ImagePatch, NewImage, NewPage, PageInfo, PageSource } from "./types";
 
 /**
@@ -40,6 +41,21 @@ function strokeId(stored: StoredStroke): string {
   for (let i = 0; i < ID_BYTES; i++) id += stored[i].toString(16).padStart(2, "0");
   return id;
 }
+
+/**
+ * 複製下來的內容（筆畫與圖片），可以貼到任何一本筆記本的任何一頁。
+ * 圖片檔本身在共用的檔案庫裡，這裡只帶檔案資訊。
+ */
+export interface ClipContent {
+  /** 依疊放順序 */
+  strokes: Stroke[];
+  /** 依疊放順序（先的在下面） */
+  images: Required<NewImage>[];
+  files: FileInfo[];
+}
+
+/** 圖片上下順序：移到最上層、最下層、上移一層、下移一層 */
+export type ImageOrder = "front" | "back" | "forward" | "backward";
 
 export class Notebook {
   readonly doc: Y.Doc;
@@ -289,10 +305,110 @@ export class Notebook {
     });
   }
 
+  /**
+   * 調整圖片的上下順序（只在同一頁的圖片之間；筆跡一律在圖片上面）。
+   * 多張一起移動時保持彼此的相對順序。
+   */
+  reorderImages(ids: Iterable<string>, order: ImageOrder): void {
+    const wanted = new Set(ids);
+    const first = [...wanted].map((id) => this.imagesMap.get(id)).find(Boolean);
+    if (!first) return;
+    const pageId = first.get("page") as string;
+    const list = this.images(pageId).map((i) => i.id);
+    const picked = list.filter((id) => wanted.has(id));
+    if (!picked.length) return;
+    const rest = list.filter((id) => !wanted.has(id));
+    let next: string[];
+    if (order === "front") next = [...rest, ...picked];
+    else if (order === "back") next = [...picked, ...rest];
+    else {
+      // 每張選到的圖和相鄰一張沒選到的圖交換
+      next = [...list];
+      const step = order === "forward" ? 1 : -1;
+      const range = step > 0 ? [...next.keys()].reverse() : [...next.keys()];
+      for (const i of range) {
+        const j = i + step;
+        if (wanted.has(next[i]) && j >= 0 && j < next.length && !wanted.has(next[j])) [next[i], next[j]] = [next[j], next[i]];
+      }
+    }
+    if (next.every((id, i) => id === list[i])) return;
+    const z = (id: string) => (this.imagesMap.get(id)!.get("z") as string) ?? "";
+    this.doc.transact(() => {
+      // 沒選到的圖保持原本的 z；每一段連續選到的圖，在前後兩張之間產生新的 z
+      for (let i = 0; i < next.length; ) {
+        if (!wanted.has(next[i])) {
+          i++;
+          continue;
+        }
+        let j = i;
+        while (j < next.length && wanted.has(next[j])) j++;
+        const lo = i > 0 ? z(next[i - 1]) || null : null;
+        const hi = j < next.length ? z(next[j]) || null : null;
+        if (lo !== null && hi !== null && lo >= hi) {
+          // 兩台裝置同時調整造成 z 重複：整頁重新編號
+          const keys = generateNKeysBetween(null, null, next.length);
+          next.forEach((id, k) => this.imagesMap.get(id)!.set("z", keys[k]));
+          return;
+        }
+        const keys = generateNKeysBetween(lo, hi, j - i);
+        for (let k = i; k < j; k++) this.imagesMap.get(next[k])!.set("z", keys[k - i]);
+        i = j;
+      }
+    });
+  }
+
   removeImages(ids: Iterable<string>): void {
     this.doc.transact(() => {
       for (const id of ids) this.imagesMap.delete(id);
     });
+  }
+
+  // ── 套索選取：變換、複製貼上 ─────────────────────────
+
+  /**
+   * 一次移動、縮放、旋轉選取的筆畫與圖片（一個 transaction：一次復原、同步一次）。
+   * 筆畫保留代號與疊放位置；有圖片時角度必須是 90 的倍數。
+   */
+  transformContent(pageId: string, strokeIds: Iterable<string>, imageIds: Iterable<string>, t: ContentTransform): void {
+    const images = [...imageIds];
+    this.doc.transact(() => {
+      this.updateStrokes(pageId, strokeIds, (s) => transformStroke(s, t));
+      for (const id of images) {
+        const img = this.getImage(id);
+        if (!img || img.pageId !== pageId) continue;
+        const r = transformImage(img, t);
+        this.updateImage(id, { x: r.x, y: r.y, width: r.width, height: r.height, rotation: r.rotation });
+      }
+    });
+  }
+
+  /** 複製某頁上的筆畫與圖片（依疊放順序） */
+  copyContent(pageId: string, strokeIds: Iterable<string>, imageIds: Iterable<string>): ClipContent {
+    const sIds = new Set(strokeIds);
+    const iIds = new Set(imageIds);
+    const strokes = this.strokes(pageId).filter((s) => sIds.has(s.id)).map((s) => s.stroke);
+    const list = this.images(pageId).filter((i) => iIds.has(i.id));
+    const files = [...new Set(list.map((i) => i.fileId))].map((id) => this.getFile(id)).filter((f): f is FileInfo => !!f);
+    const images = list.map(({ fileId, x, y, width, height, rotation }) => ({ fileId, x, y, width, height, rotation }));
+    return { strokes, images, files };
+  }
+
+  /**
+   * 貼上複製的內容到某頁最上層（可以先套用變換，例如錯開位置），回傳新的筆畫與圖片代號。
+   * 圖片檔要已經在檔案庫裡（同一個 app 的筆記本共用檔案庫）。
+   */
+  pasteContent(pageId: string, clip: ClipContent, t?: ContentTransform): { strokes: string[]; images: string[] } {
+    if (!this.pages.has(pageId)) throw new Error(`頁面不存在：${pageId}`);
+    const out = { strokes: [] as string[], images: [] as string[] };
+    this.doc.transact(() => {
+      for (const f of clip.files) this.addFile(f);
+      for (const img of clip.images) {
+        const r = t ? transformImage(img, t) : img;
+        out.images.push(this.addImage(pageId, { fileId: img.fileId, x: r.x, y: r.y, width: r.width, height: r.height, rotation: r.rotation }));
+      }
+      for (const s of clip.strokes) out.strokes.push(this.addStroke(pageId, t ? transformStroke(s, t) : s));
+    });
+    return out;
   }
 
   // ── 檔案 ───────────────────────────────────────────
@@ -454,4 +570,5 @@ function newId(): string {
   return [...bytes].map((b) => b.toString(36).padStart(2, "0")).join("").slice(0, 16);
 }
 
+export { IDENTITY, transformImage, transformMatrix, transformPoint, transformStroke, translation, type ContentTransform } from "./transform";
 export type { FileInfo, ImageInfo, ImagePatch, NewImage, NewPage, PageInfo, PageSource, PaperTemplate } from "./types";

@@ -1,4 +1,4 @@
-import type { Notebook, PaperTemplate } from "@tool/notes/notebook";
+import { translation, type Notebook, type PaperTemplate } from "@tool/notes/notebook";
 import { useEffect, useRef, useState } from "react";
 import * as Y from "yjs";
 import { PageThumb } from "../components/PageThumb";
@@ -11,7 +11,7 @@ import { platform } from "../lib/platform";
 import { loadPosition, loadPref, savePosition, savePref } from "../lib/readingPosition";
 import { createThumbnailer, type ThumbnailDoc } from "../lib/thumbnails";
 import { attachTouchGestures } from "./gestures";
-import { InkController, paintStrokes, type InkSettings, type RemoteLiveStroke } from "./ink";
+import { InkController, paintStrokes, type CopiedSelection, type InkSettings, type RemoteLiveStroke } from "./ink";
 import { HIGHLIGHTER_COLORS, HIGHLIGHTER_SIZES, InkToolbar, PEN_COLORS, PEN_SIZES } from "./InkToolbar";
 import { PasswordForm } from "./PasswordForm";
 import { Awareness, SyncSession } from "@tool/notes/sync";
@@ -21,6 +21,15 @@ import { deviceName } from "../sync/webrtc";
 
 /** 本機修改的標記：復原只會復原這個來源的動作 */
 const LOCAL = "this-device";
+
+/**
+ * 筆記的剪貼簿（筆跡、圖片）：放在記憶體裡、整個 app 共用，所以可以貼到別頁或別本筆記本
+ * （圖片檔在共用的檔案庫裡）。系統剪貼簿只放標記文字；之後若複製了截圖，貼上時以截圖為準。
+ */
+let noteClipboard: (CopiedSelection & { pastes: number }) | null = null;
+const CLIP_MARKER = "（筆記內容：請在筆記本裡貼上）";
+/** 貼回同一頁時每次錯開的距離（pt） */
+const PASTE_OFFSET = 12;
 
 type ZoomPreset = "page-width" | "page-fit" | "auto";
 type SidebarView = "thumbs" | "outline";
@@ -180,6 +189,7 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
   const [inviteOpen, setInviteOpen] = useState(false);
   /** 「選取」工具選到的東西：圖片代號、"lasso"（套索選取）或 null */
   const [selection, setSelection] = useState<string | null>(null);
+  const [hasClip, setHasClip] = useState(() => noteClipboard !== null);
   const imageInput = useRef<HTMLInputElement>(null);
 
   const [searchOpen, setSearchOpen] = useState(false);
@@ -306,6 +316,10 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
       }, (live) => awarenessRef.current?.setLocalStateField("live", live && encodeLive(live)),
       (fileId) => library.blobs.get(fileId),
       setSelection);
+      ctl.onCopy = (copied) => {
+        storeClip(copied);
+        setToast({ text: "已複製，到要放的頁面按「貼上」或 Ctrl+V。" });
+      };
       inkCtl.current = ctl;
       const undo = notebook.createUndoManager(LOCAL);
       undoRef.current = undo;
@@ -726,6 +740,39 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
     }
   };
 
+  const storeClip = (copied: CopiedSelection) => {
+    noteClipboard = { ...copied, pastes: 0 };
+    setHasClip(true);
+  };
+
+  /** 複製目前的選取；`cut` = 複製後刪除 */
+  const copySelection = (cut = false): boolean => {
+    const copied = inkCtl.current?.copySelection();
+    if (!copied) return false;
+    storeClip(copied);
+    if (cut) inkCtl.current?.deleteSelection();
+    return true;
+  };
+
+  /** 把剪貼簿的內容貼到目前這一頁，然後切到「選取」工具並選取貼上的內容 */
+  const pasteClip = () => {
+    const notebook = nbRef.current;
+    const clip = noteClipboard;
+    const pageId = currentPageId();
+    if (!notebook || !clip || !pageId || !notebook.getPage(pageId)) return;
+    // 貼回原本那一頁時錯開一點，才看得出貼上了；貼到別頁時放在相同位置
+    const n = clip.pageId === pageId ? ++clip.pastes : 0;
+    let out = { strokes: [] as string[], images: [] as string[] };
+    notebook.doc.transact(() => {
+      out = notebook.pasteContent(pageId, clip.clip, translation(n * PASTE_OFFSET, -n * PASTE_OFFSET));
+    }, LOCAL);
+    const index = displayRef.current?.pageIds.indexOf(pageId) ?? -1;
+    if (index < 0) return;
+    setInk((s) => ({ ...s, tool: "select" }));
+    // 等工具切換生效後再選取
+    window.setTimeout(() => inkCtl.current?.selectContent(index, pageId, out.strokes, out.images), 0);
+  };
+
   const deletePage = (id: string) => {
     if (!nb || structureBlocked) return;
     const ids = nb.pageIds;
@@ -824,6 +871,15 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
       } else if (!typing && mod && (((e.key === "z" || e.key === "Z") && e.shiftKey) || e.key === "y" || e.key === "Y")) {
         e.preventDefault();
         undoRef.current?.redo();
+      } else if (!typing && mod && (e.key === "d" || e.key === "D") && selection) {
+        // 複製一份（原地錯開）
+        e.preventDefault();
+        if (copySelection()) pasteClip();
+      } else if (!typing && mod && (e.code === "BracketRight" || e.code === "BracketLeft") && selection) {
+        // Ctrl+] 上移一層、Ctrl+[ 下移一層；加 Shift 移到最上層／最下層
+        e.preventDefault();
+        const up = e.code === "BracketRight";
+        inkCtl.current?.reorderSelection(e.shiftKey ? (up ? "front" : "back") : up ? "forward" : "backward");
       } else if (!typing && !mod && (e.key === "Delete" || e.key === "Backspace") && selection) {
         e.preventDefault();
         inkCtl.current?.deleteSelection();
@@ -842,18 +898,35 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
     return () => window.removeEventListener("keydown", onKey);
   });
 
-  // 貼上圖片（例如截圖後 Ctrl+V）
+  // 複製、剪下選取的筆跡與圖片（Ctrl+C／Ctrl+X）；貼上圖片（例如截圖後 Ctrl+V）或複製的筆記內容
   useEffect(() => {
-    const onPaste = (e: ClipboardEvent) => {
-      const t = e.target;
-      if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) return;
-      const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
-      if (!files.length || status.kind !== "ready") return;
+    const typing = (t: EventTarget | null) => t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement;
+    const onCopy = (e: ClipboardEvent) => {
+      // 沒有選取筆跡或圖片時照常（例如閱讀模式下複製 PDF 的文字）
+      if (typing(e.target) || !selection || !copySelection(e.type === "cut")) return;
       e.preventDefault();
-      void insertImages(files);
+      // 換掉系統剪貼簿裡舊的截圖，貼上時才會貼這次複製的內容
+      e.clipboardData?.setData("text/plain", CLIP_MARKER);
     };
+    const onPaste = (e: ClipboardEvent) => {
+      if (typing(e.target) || status.kind !== "ready") return;
+      const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
+      if (files.length) {
+        e.preventDefault();
+        void insertImages(files);
+      } else if (noteClipboard) {
+        e.preventDefault();
+        pasteClip();
+      }
+    };
+    window.addEventListener("copy", onCopy);
+    window.addEventListener("cut", onCopy);
     window.addEventListener("paste", onPaste);
-    return () => window.removeEventListener("paste", onPaste);
+    return () => {
+      window.removeEventListener("copy", onCopy);
+      window.removeEventListener("cut", onCopy);
+      window.removeEventListener("paste", onPaste);
+    };
   });
 
   const commitPage = () => {
@@ -978,6 +1051,7 @@ export function NotebookView({ library, notebookId, initialPassword, onClose }: 
           onExport={() => void exportNotes()}
           onInsertImage={() => imageInput.current?.click()}
           onSave={() => void saveNotebook()}
+          onPaste={hasClip ? pasteClip : undefined}
           exportBlocked={encrypted && !password ? "請先輸入 PDF 的開啟密碼" : undefined}
           exporting={exporting}
         />

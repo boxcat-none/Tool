@@ -270,3 +270,24 @@
 .lasso-select__color { width: 20px; height: 20px; padding: 0; border: 2px solid var(--surface); border-radius: 50%; cursor: pointer; box-shadow: 0 0 0 1px var(--border); }
 @media (pointer: coarse) { .lasso-select__color { width: 28px; height: 28px; } }
 .lasso-select__delete { padding: 4px 10px; font-size: 13px; color: #fff; background: var(--danger); border: 0; border-radius: 6px; cursor: pointer; white-space: nowrap; box-shadow: 0 1px 3px rgb(0 0 0 / 0.15); }
+.lasso-select__button[hidden] { display: none; }
+.lasso-select__button {
+  padding: 4px 10px; font-size: 13px; color: var(--text); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 6px; cursor: pointer; white-space: nowrap; box-shadow: 0 1px 3px rgb(0 0 0 / 0.15);
+}
+/* 按鈕多時換行（往上長），手機上才不會超出畫面 */
+.lasso-select__actions, .image-select__actions { flex-wrap: wrap; width: max-content; }
+.image-select__actions { justify-content: flex-end; }
+/* 右下角：等比例縮放；下方圓點：旋轉 */
+.lasso-select__handle, .lasso-select__rotate {
+  position: absolute; width: 16px; height: 16px; box-sizing: border-box; background: #fff;
+  border: 2px solid var(--accent); pointer-events: auto; touch-action: none;
+}
+.lasso-select__handle { right: -8px; bottom: -8px; border-radius: 3px; cursor: nwse-resize; }
+.lasso-select__rotate { left: 50%; top: calc(100% + 14px); margin-left: -8px; border-radius: 50%; cursor: grab; }
+.lasso-select__rotate::before { content: ""; position: absolute; left: 50%; bottom: 100%; width: 0; height: 14px; border-left: 1.5px dashed var(--accent); }
+@media (pointer: coarse) {
+  .lasso-select__handle, .lasso-select__rotate { width: 26px; height: 26px; }
+  .lasso-select__handle { right: -13px; bottom: -13px; }
+  .lasso-select__rotate { margin-left: -13px; top: calc(100% + 16px); }
+}

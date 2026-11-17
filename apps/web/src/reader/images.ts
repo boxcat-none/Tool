@@ -1,4 +1,13 @@
-import { imagePlacement, multiplyMatrix, type ImageInfo, type ImagePatch, type Notebook } from "@tool/notes/notebook";
+import {
+  imagePlacement,
+  multiplyMatrix,
+  transformImage,
+  type ContentTransform,
+  type ImageInfo,
+  type ImageOrder,
+  type ImagePatch,
+  type Notebook,
+} from "@tool/notes/notebook";
 
 /**
  * 頁面上的圖片（每頁一個 PageImages）。
@@ -30,6 +39,8 @@ export interface ImageHost {
   selectMode(): boolean;
   selected(): string | null;
   select(id: string | null): void;
+  /** 選取框上的「複製」 */
+  requestCopy(): void;
 }
 
 const MIN_SIZE = 12; // pt
@@ -43,8 +54,8 @@ export class PageImages {
   private imgs = new Map<string, HTMLImageElement>();
   /** 拖曳中的暫時位置 */
   private preview: { id: string; rect: Rect } | null = null;
-  /** 套索選取一起移動時的暫時位移 */
-  private group: { ids: Set<string>; dx: number; dy: number } | null = null;
+  /** 套索選取一起移動、縮放、旋轉時的暫時變換 */
+  private group: { ids: Set<string>; t: ContentTransform } | null = null;
   private drag: {
     id: string;
     pointerId: number;
@@ -66,11 +77,20 @@ export class PageImages {
       '<span class="image-select__handle" data-corner="0"></span><span class="image-select__handle" data-corner="1"></span>' +
       '<span class="image-select__handle" data-corner="2"></span><span class="image-select__handle" data-corner="3"></span>' +
       '<span class="image-select__actions"><button type="button" data-action="rotate">旋轉</button>' +
+      '<button type="button" data-action="copy">複製</button>' +
+      '<button type="button" data-order="front" aria-label="移到最上層">置頂</button>' +
+      '<button type="button" data-order="back" aria-label="移到最下層">置底</button>' +
       '<button type="button" data-action="delete" class="image-select__danger">刪除</button></span>';
     for (const btn of this.overlay.querySelectorAll("button")) {
       // 按鈕：不要讓輸入層把這次點擊當成「點到空白處、取消選取」
       btn.addEventListener("pointerdown", (e) => e.stopPropagation());
-      btn.addEventListener("click", () => (btn.dataset.action === "rotate" ? this.rotateSelected() : this.deleteSelected()));
+      btn.addEventListener("click", () => {
+        const { action, order } = btn.dataset;
+        if (action === "rotate") this.rotateSelected();
+        else if (action === "copy") this.host.requestCopy();
+        else if (order) this.reorderSelected(order as ImageOrder);
+        else this.deleteSelected();
+      });
     }
   }
 
@@ -86,6 +106,12 @@ export class PageImages {
       () => this.host.nb.updateImage(id, { rotation, x: cx - info.height / 2, y: cy - info.width / 2, width: info.height, height: info.width }),
       this.host.origin,
     );
+  }
+
+  /** 調整選取的圖片的上下順序 */
+  reorderSelected(order: ImageOrder) {
+    const id = this.host.selected();
+    if (id) this.host.nb.doc.transact(() => this.host.nb.reorderImages([id], order), this.host.origin);
   }
 
   setView(view: PageView) {
@@ -147,11 +173,12 @@ export class PageImages {
       h.style.top = `${corners[i][1] - top}px`;
     });
     this.overlay.hidden = false;
+    fitActions(this.overlay.querySelector(".image-select__actions")!, left, Math.abs(x1 - x0), this.view.div.clientWidth, "right");
   }
 
-  /** 套索選取拖曳中：這些圖片暫時位移（null = 結束） */
-  setGroupOffset(ids: Set<string> | null, dx = 0, dy = 0) {
-    this.group = ids && ids.size ? { ids, dx, dy } : null;
+  /** 套索選取拖曳中：這些圖片暫時套用變換（null = 結束） */
+  setGroupTransform(ids: Set<string> | null, t?: ContentTransform) {
+    this.group = ids && ids.size && t ? { ids, t } : null;
     const pageId = this.pageId();
     if (!pageId) return;
     for (const info of this.host.nb.images(pageId)) {
@@ -163,7 +190,7 @@ export class PageImages {
   private rectFor(info: ImageInfo): Rect {
     if (this.preview?.id === info.id) return this.preview.rect;
     const r = rectOf(info);
-    if (this.group?.ids.has(info.id)) return { ...r, x: r.x + this.group.dx, y: r.y + this.group.dy };
+    if (this.group?.ids.has(info.id)) return transformImage(r, this.group.t);
     return r;
   }
 
@@ -273,6 +300,19 @@ export class PageImages {
     }
     this.render();
   }
+}
+
+/**
+ * 選取框上方的按鈕列：預設靠框的左邊或右邊對齊，但不超出頁面左右邊（iPhone 上頁面很窄）。
+ * `boxLeft`、`boxWidth`、`pageWidth` 是畫面 px；按鈕太多時換行（往上長）。
+ */
+export function fitActions(actions: HTMLElement, boxLeft: number, boxWidth: number, pageWidth: number, align: "left" | "right") {
+  actions.style.maxWidth = `${Math.max(120, pageWidth)}px`;
+  actions.style.right = "auto";
+  const w = actions.offsetWidth;
+  const preferred = align === "left" ? 0 : boxWidth - w;
+  const left = Math.min(Math.max(preferred, -boxLeft), pageWidth - boxLeft - w);
+  actions.style.left = `${Math.max(left, -boxLeft)}px`;
 }
 
 interface Rect {
