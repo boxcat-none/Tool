@@ -1,0 +1,191 @@
+import { describe, expect, it } from "vitest";
+import { branchColors, dropTarget, edgePath, layoutTree, MindMap, neighbor, splitSides, themeById, THEMES, type Layout, type Structure } from "../src";
+
+const measure = () => ({ width: 80, height: 20 });
+
+function sample() {
+  const m = MindMap.create("中心");
+  const r = m.rootId;
+  const ids = ["一", "二", "三", "四"].map((t) => m.addChild(r, t));
+  const kids = ["甲", "乙", "丙"].map((t) => m.addChild(ids[0], t));
+  return { m, r, ids, kids };
+}
+
+const overlaps = (l: Layout) => {
+  const ns = l.nodes;
+  for (let i = 0; i < ns.length; i++)
+    for (let j = i + 1; j < ns.length; j++) {
+      const a = ns[i], b = ns[j];
+      if (a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height) return [a.id, b.id];
+    }
+  return null;
+};
+
+describe("layoutTree", () => {
+  for (const s of ["mindmap", "logic", "org", "tree"] as Structure[]) {
+    it(`${s}：所有節點都有位置，而且互不重疊`, () => {
+      const { m } = sample();
+      const l = layoutTree(m.tree(), measure, s);
+      expect(l.nodes).toHaveLength(m.size);
+      expect(overlaps(l)).toBeNull();
+      expect(l.bounds.width).toBeGreaterThan(0);
+    });
+  }
+
+  it("mindmap：中心主題置中，分支分在左右兩邊；左邊在中心左側", () => {
+    const { m, r, ids } = sample();
+    const l = layoutTree(m.tree(), measure, "mindmap");
+    const root = l.byId.get(r)!;
+    expect(root.x + root.width / 2).toBe(0);
+    const sides = ids.map((id) => l.byId.get(id)!.side);
+    expect(sides).toContain(1);
+    expect(sides).toContain(-1);
+    for (const id of ids) {
+      const n = l.byId.get(id)!;
+      if (n.side === 1) expect(n.x).toBeGreaterThan(root.x + root.width);
+      else expect(n.x + n.width).toBeLessThan(root.x);
+    }
+    // 子節點跟著父節點在同一邊、同一條分支
+    for (const k of l.byId.get(ids[0])!.children) {
+      expect(l.byId.get(k)!.side).toBe(l.byId.get(ids[0])!.side);
+      expect(l.byId.get(k)!.branch).toBe(0);
+    }
+  });
+
+  it("splitSides 依子樹高度平衡，右邊至少一個", () => {
+    expect(splitSides([100, 20, 20, 20, 20, 20])).toEqual([[0], [1, 2, 3, 4, 5]]);
+    expect(splitSides([10, 10, 10, 10])).toEqual([[0, 1], [2, 3]]);
+    expect(splitSides([10])).toEqual([[0], []]);
+    expect(splitSides([])).toEqual([[], []]);
+  });
+
+  it("logic：子節點都在父節點右邊，兄弟由上往下排", () => {
+    const { m, r, ids } = sample();
+    const l = layoutTree(m.tree(), measure, "logic");
+    const root = l.byId.get(r)!;
+    const ys = ids.map((id) => l.byId.get(id)!.y);
+    expect([...ys].sort((a, b) => a - b)).toEqual(ys);
+    for (const id of ids) expect(l.byId.get(id)!.x).toBeGreaterThan(root.x + root.width);
+  });
+
+  it("org：子節點在父節點下面，兄弟由左往右排", () => {
+    const { m, r, ids } = sample();
+    const l = layoutTree(m.tree(), measure, "org");
+    const root = l.byId.get(r)!;
+    const xs = ids.map((id) => l.byId.get(id)!.x);
+    expect([...xs].sort((a, b) => a - b)).toEqual(xs);
+    for (const id of ids) expect(l.byId.get(id)!.y).toBeGreaterThan(root.y + root.height);
+  });
+
+  it("tree：依大綱順序往下排，每層往右縮排", () => {
+    const { m, ids, kids } = sample();
+    const l = layoutTree(m.tree(), measure, "tree");
+    const order = [...l.nodes].sort((a, b) => a.y - b.y).map((n) => n.id);
+    expect(order.slice(1, 5)).toEqual([ids[0], ...kids]);
+    expect(l.byId.get(kids[0])!.x).toBeGreaterThan(l.byId.get(ids[0])!.x);
+  });
+
+  it("收合的節點：子節點不排版", () => {
+    const { m, ids } = sample();
+    m.setCollapsed(ids[0], true);
+    const l = layoutTree(m.tree(), measure, "logic");
+    expect(l.nodes).toHaveLength(5);
+    expect(l.byId.get(ids[0])!.hidden).toBe(3);
+  });
+
+  it("連接線：各種結構與樣式都產生路徑，起點在父節點邊上", () => {
+    const { m, r, ids } = sample();
+    for (const s of ["mindmap", "logic", "org", "tree"] as Structure[]) {
+      const l = layoutTree(m.tree(), measure, s);
+      for (const style of ["curve", "elbow", "straight"] as const) {
+        const d = edgePath(l, l.byId.get(r)!, l.byId.get(ids[0])!, style);
+        expect(d).toMatch(/^M-?[\d.]+ -?[\d.]+/);
+      }
+    }
+    const l = layoutTree(m.tree(), measure, "logic");
+    const root = l.byId.get(r)!;
+    expect(edgePath(l, root, l.byId.get(ids[0])!, "straight").startsWith(`M${root.x + root.width} ${root.y + root.height / 2}`)).toBe(true);
+  });
+
+  it("節點卡片：線從父卡片的連接點拉出，接到子卡片的連接點（中心主題從邊上出來）", () => {
+    const { m, r, ids, kids } = sample();
+    const l = layoutTree(m.tree(), measure, "logic");
+    const a = l.byId.get(ids[0])!;
+    const k = l.byId.get(kids[0])!;
+    const d = edgePath(l, a, k, "straight", { portInset: 13 });
+    expect(d).toBe(`M${a.x + a.width - 13} ${a.y + a.height / 2}L${k.x + 13} ${k.y + k.height / 2}`);
+    const root = l.byId.get(r)!;
+    expect(edgePath(l, root, a, "straight", { portInset: 13 }).startsWith(`M${root.x + root.width} `)).toBe(true);
+  });
+});
+
+describe("拖曳放下", () => {
+  it("放在節點中間 = 變成子節點；靠上／靠下 = 插在前面／後面；不能放在自己的子孫上", () => {
+    const { m, r, ids, kids } = sample();
+    const l = layoutTree(m.tree(), measure, "logic");
+    const at = (id: string, f: number) => {
+      const n = l.byId.get(id)!;
+      return [n.x + n.width / 2, n.y + n.height * f] as const;
+    };
+    expect(dropTarget(l, ids[3], ...at(ids[1], 0.5))).toMatchObject({ parent: ids[1], index: 0, where: "child" });
+    expect(dropTarget(l, ids[3], ...at(ids[1], 0.1))).toMatchObject({ parent: r, index: 1, where: "before" });
+    expect(dropTarget(l, ids[3], ...at(ids[1], 0.9))).toMatchObject({ parent: r, index: 2, where: "after" });
+    // 拖曳中的節點不算在 index 裡
+    expect(dropTarget(l, ids[0], ...at(ids[2], 0.9))).toMatchObject({ parent: r, index: 2 });
+    expect(dropTarget(l, ids[0], ...at(kids[1], 0.5))).toBeNull();
+    expect(dropTarget(l, ids[0], ...at(ids[0], 0.5))).toBeNull();
+    // 放在中心主題上：加到最後
+    expect(dropTarget(l, kids[0], ...at(r, 0.1))).toMatchObject({ parent: r, index: 4 });
+    // 空白處
+    expect(dropTarget(l, kids[0], 9999, 9999)).toBeNull();
+  });
+
+  it("放下的結果交給 move 後，節點真的到那個位置", () => {
+    const { m, r, ids } = sample();
+    const l = layoutTree(m.tree(), measure, "logic");
+    const n = l.byId.get(ids[1])!;
+    const t = dropTarget(l, ids[3], n.x + 5, n.y + 1)!;
+    m.move(ids[3], t.parent, t.index);
+    expect(m.children(r)).toEqual([ids[0], ids[3], ids[1], ids[2]]);
+  });
+
+  it("org 結構用左右判斷前後", () => {
+    const { m, r, ids } = sample();
+    const l = layoutTree(m.tree(), measure, "org");
+    const n = l.byId.get(ids[1])!;
+    expect(dropTarget(l, ids[3], n.x + 2, n.y + n.height / 2)).toMatchObject({ parent: r, where: "before" });
+    expect(dropTarget(l, ids[3], n.x + n.width - 2, n.y + n.height / 2)).toMatchObject({ parent: r, where: "after" });
+  });
+});
+
+describe("方向鍵", () => {
+  it("logic：右 = 子節點、左 = 父節點、上下 = 兄弟", () => {
+    const { m, r, ids, kids } = sample();
+    const l = layoutTree(m.tree(), measure, "logic");
+    expect(neighbor(l, r, "right")).not.toBeNull();
+    expect(neighbor(l, ids[0], "left")).toBe(r);
+    expect(neighbor(l, ids[0], "right")).toBe(kids[1]);
+    expect(neighbor(l, ids[1], "up")).toBe(ids[0]);
+    expect(neighbor(l, ids[1], "down")).toBe(ids[2]);
+    expect(neighbor(l, r, "left")).toBeNull();
+  });
+});
+
+describe("主題", () => {
+  it("五種主題都有，找不到時用第一個", () => {
+    expect(THEMES.map((t) => t.id)).toEqual(["rainbow", "minimal", "boxed", "sketch", "node"]);
+    expect(themeById("nope").id).toBe("rainbow");
+    for (const t of THEMES) for (const d of [0, 1, 2, 5]) expect(t.style(d, "#123456").fontSize).toBeGreaterThan(10);
+  });
+
+  it("分支顏色：第一層依序取色，子節點跟著；自訂顏色往下傳", () => {
+    const { m, ids, kids } = sample();
+    const theme = themeById("rainbow");
+    m.setColor(kids[1], "#000000");
+    const c = branchColors(m.tree(), theme);
+    expect(c.get(ids[0])).toBe(theme.palette[0]);
+    expect(c.get(ids[1])).toBe(theme.palette[1]);
+    expect(c.get(kids[0])).toBe(theme.palette[0]);
+    expect(c.get(kids[1])).toBe("#000000");
+  });
+});

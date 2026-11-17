@@ -9,6 +9,9 @@
   調整頁面後目錄仍正確；存成 `.guganote` 或匯出 PDF；加入主畫面後可以離線使用；
   **連線到其他裝置（測試版）**：iPad 和電腦在同一個 Wi-Fi 下直接連線（WebRTC），即時同步同一本筆記本
 
+- **心智圖**（獨立開發中，之後和筆記合併）：心智圖、邏輯圖、組織圖、樹狀圖四種結構，五種樣式（彩虹曲線、極簡線條、方框直角、手繪便利貼、節點卡片）；
+  Tab／Enter 新增主題、拖曳換位置、收合、分支顏色、復原、貼上縮排文字自動建立主題；自動儲存；匯出 PNG、SVG、Markdown 大綱、`.gugamap` 檔
+
 - **合併 PDF**：多個 PDF 依順序合成一個，可以拖拉或用按鈕調整順序
 - **分割 PDF**：依範圍分割、每頁一個檔案、每 N 頁一份、擷取頁面合成單一檔案
 - **整理頁面**：用縮圖旋轉、刪除頁面，或拖拉調整順序；可以多選後一次處理
@@ -45,6 +48,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml   # Rust 測試（�
 
 ```
 packages/notes/  筆記本資料模型（Yjs），支援多裝置同時編輯
+packages/mindmap/ 心智圖資料模型（Yjs）、自動排版、樣式（見 docs/mindmap.md）
 packages/core/   PDF 處理邏輯（合併、分割、整理頁面、圖片與 PDF 互轉的計算），不依賴 UI，網頁版和軟體版共用
 apps/web/        介面（React + Vite），網頁版和軟體版共用；PDF 處理在 Web Worker 裡執行，縮圖與 PDF 轉圖片用 pdf.js
 apps/desktop/    軟體版（Tauri）：載入 apps/web 的介面，Rust 端負責存檔、呼叫 LibreOffice 轉檔
