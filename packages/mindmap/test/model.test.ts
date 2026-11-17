@@ -294,3 +294,73 @@ describe(".gugamap 檔", () => {
     expect(() => openMindMapFile(JSON.stringify({ format: "gugamap", version: 99, doc: "" }))).toThrow("新版程式");
   });
 });
+
+describe("獨立元件與連線", () => {
+  it("新增獨立元件：不在中心元件底下，有自己的位置", () => {
+    const m = MindMap.create("中心");
+    const f = m.addFloating("獨立", [300, 40]);
+    expect(m.isFloating(f)).toBe(true);
+    expect(m.parentOf(f)).toBeNull();
+    expect(m.children(m.rootId)).not.toContain(f);
+    expect(m.floatingIds()).toEqual([f]);
+    expect(m.at(f)).toEqual([300, 40]);
+    const kid = m.addChild(f, "子");
+    expect(m.parentOf(kid)).toBe(f);
+    const [tree] = m.floating();
+    expect(tree.id).toBe(f);
+    expect(tree.at).toEqual([300, 40]);
+    expect(tree.children.map((c) => c.text)).toEqual(["子"]);
+    expect(m.tree().children).toHaveLength(0);
+  });
+
+  it("連線（move）：獨立元件變成子元件，不再是獨立元件；刪線（detach）變回獨立元件", () => {
+    const m = MindMap.create("中心");
+    const a = m.addChild(m.rootId, "A");
+    const f = m.addFloating("F", [0, 0]);
+    m.addChild(f, "F 的子");
+    expect(m.move(f, a)).toBe(true);
+    expect(m.isFloating(f)).toBe(false);
+    expect(m.at(f)).toBeUndefined();
+    expect(m.floatingIds()).toEqual([]);
+    expect(texts(m, a)).toEqual(["F"]);
+    expect(m.detach(f, [120, 80])).toBe(true);
+    expect(m.isFloating(f)).toBe(true);
+    expect(m.at(f)).toEqual([120, 80]);
+    expect(texts(m, a)).toEqual([]);
+    expect(m.children(f)).toHaveLength(1);
+    // 中心元件不能拆
+    expect(m.detach(m.rootId, [0, 0])).toBe(false);
+  });
+
+  it("獨立元件可以刪除、移動位置，也會匯出到 Markdown", () => {
+    const m = MindMap.create("中心");
+    const f = m.addFloating("F", [0, 0]);
+    m.setAt(f, [10.04, 20]);
+    expect(m.at(f)).toEqual([10, 20]);
+    expect(m.toMarkdown()).toContain("# F");
+    m.remove([f]);
+    expect(m.floatingIds()).toEqual([]);
+  });
+
+  it("其他裝置刪掉獨立元件時，同時加的子元件接到中心元件（不遺失）", () => {
+    const a = MindMap.create("中心");
+    const f = a.addFloating("F", [0, 0]);
+    const b = clone(a);
+    a.remove([f]);
+    const kid = b.addChild(f, "子");
+    sync(a, b);
+    expect(a.parentOf(kid)).toBe(a.rootId);
+    expect(b.parentOf(kid)).toBe(b.rootId);
+  });
+
+  it("復原：拉線、刪線都可以復原", () => {
+    const m = MindMap.create("中心");
+    const undo = m.createUndoManager(LOCAL);
+    const f = m.addFloating("F", [0, 0]);
+    m.doc.transact(() => m.move(f, m.rootId), LOCAL);
+    expect(m.isFloating(f)).toBe(false);
+    undo.undo();
+    expect(m.isFloating(f)).toBe(true);
+    expect(m.at(f)).toEqual([0, 0]);
+  });
+});

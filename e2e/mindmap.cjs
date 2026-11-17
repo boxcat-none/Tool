@@ -198,9 +198,9 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
 
   // ── 右鍵拖曳移動整張圖（不開選單）──
   const cbox = await page.locator(".mm-canvas").boundingBox();
-  const emptyAt = async () => {
-    for (let y = cbox.y + 30; y < cbox.y + cbox.height - 30; y += 25)
-      for (let x = cbox.x + 30; x < cbox.x + cbox.width - 30; x += 25)
+  const emptyAt = async (m = 30) => {
+    for (let y = cbox.y + m; y < cbox.y + cbox.height - m; y += 25)
+      for (let x = cbox.x + m; x < cbox.x + cbox.width - m; x += 25)
         if (await page.evaluate(([x, y]) => { const el = document.elementFromPoint(x, y); return !!el?.closest(".mm-canvas") && !el.closest("[data-node],[data-edge],[data-toggle],.mm-menu,.mm-hint"); }, [x, y])) return [x, y];
     throw new Error("找不到空白處");
   };
@@ -295,6 +295,71 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   await page.getByRole("menuitem", { name: "回到自動排版的位置" }).click();
   check((await posOf("營收")).join() === a0.join() && (await posOf("時間表")).join() === b0.join(), "menu: back to auto layout position (both)");
   await page.keyboard.press("Escape");
+
+  // ── 元件最小大小 ──
+  const minScale = await scale(page);
+  const minOk = await page.$$eval(".mm-nodes [data-node]", (els) => els.map((g) => g.getBBox()).every((b) => b.width >= 119 && b.height >= 43));
+  check(minOk, "every element is at least the minimum size (120×44)", minScale);
+
+  // ── 右鍵點背景新增 = 獨立元件（不連線）；從圓點拉線連接；刪掉線條 ──
+  const mdBeforeFloat = await outline(page);
+  const edgeCount = async () => page.locator(".mm-edges path").count();
+  const e0 = await edgeCount();
+  [ex, ey] = await emptyAt(140);
+  await page.mouse.click(ex, ey, { button: "right" });
+  await page.getByRole("menuitem", { name: "新增元件" }).click();
+  await typeTopic(page, "獨立");
+  await page.keyboard.press("Enter");
+  const [flx, fly] = await center(page, "獨立");
+  check((await edgeCount()) === e0 && Math.hypot(flx - ex, fly - ey) < 30, "background menu adds a standalone element (no line) where you clicked", [flx - ex, fly - ey]);
+  check((await outline(page)).startsWith(mdBeforeFloat.trimEnd()) && (await outline(page)).includes("# 獨立"), "standalone element is not part of the tree");
+  // 右鍵點元件新增的子元件會自動連線（前面的 Tab／選單已測）；這裡從「時間表」的圓點拉線到「獨立」
+  await node(page, "時間表").click();
+  check(await page.locator("[data-handle]").count() === 1, "a connected element shows one link handle (away from its incoming line)");
+  const handleAt = (side) => page.evaluate((side) => {
+    const r = document.querySelector(side ? `[data-handle][data-side="${side}"] circle:last-child` : "[data-handle] circle:last-child").getBoundingClientRect();
+    return [r.x + r.width / 2, r.y + r.height / 2];
+  }, side);
+  const fPos0 = await posOf("獨立");
+  let [hdx, hdy] = await handleAt(null);
+  await page.mouse.move(hdx, hdy); await page.mouse.down();
+  await page.mouse.move((hdx + flx) / 2, (hdy + fly) / 2, { steps: 4 });
+  check(await page.locator(".mm-link path").count() === 1, "dragging from a handle draws a line preview");
+  await page.mouse.move(flx, fly, { steps: 4 });
+  check(await page.locator('.mm-link[data-link-ok="true"]').count() === 1, "hovering a valid element highlights it");
+  await page.mouse.up();
+  check((await edgeCount()) === e0 + 1 && /- 時間表\n\s+- 獨立/.test(await outline(page)), "releasing on an element connects it as a child", await outline(page));
+  check((await posOf("獨立")).join() === fPos0.join(), "connected element stays where it was", [fPos0, await posOf("獨立")]);
+  // 不能連到自己的上層（會形成迴圈）
+  await node(page, "獨立").click();
+  check(await page.locator("[data-handle]").count() === 1, "…the connected element too");
+  [hdx, hdy] = await handleAt(null);
+  const [pax, pay] = await center(page, "時間表");
+  await page.mouse.move(hdx, hdy); await page.mouse.down();
+  await page.mouse.move(pax, pay, { steps: 6 });
+  check(await page.locator('.mm-link[data-link-ok="false"]').count() === 1, "linking to its own parent is shown as not allowed");
+  await page.mouse.up();
+  check((await edgeCount()) === e0 + 1, "…and does nothing");
+  // 點線條按 Delete：刪線，元件變回獨立元件、留在原地
+  const fid = await node(page, "獨立").getAttribute("data-node");
+  await page.mouse.click(...(await edgePoint(fid)));
+  await page.keyboard.press("Delete");
+  check((await edgeCount()) === e0 && (await texts(page)).includes("獨立") && !/- 時間表\n\s+- 獨立/.test(await outline(page)), "Delete on a line removes only the line");
+  check((await posOf("獨立")).join() === fPos0.join(), "detached element stays in place");
+  await node(page, "獨立").click();
+  check(await page.locator("[data-handle]").count() === 2, "a standalone element has handles on both sides");
+  // 拖動獨立元件（已選取）
+  const [glx, gly] = await center(page, "獨立");
+  await page.mouse.move(glx, gly); await page.mouse.down();
+  await page.mouse.move(glx + 10, gly + 10, { steps: 3 });
+  await page.mouse.move(glx + 40, gly + 30, { steps: 5 });
+  await page.mouse.up();
+  const fPos1 = await posOf("獨立");
+  check(fPos1[0] !== fPos0[0] && (await edgeCount()) === e0, "standalone element can be dragged freely", [fPos0, fPos1]);
+  await page.keyboard.press("Control+z");
+  check((await posOf("獨立")).join() === fPos0.join(), "undo moves it back");
+  await page.keyboard.press("Delete");
+  check((await outline(page)) === mdBeforeFloat, "deleting the standalone element leaves the tree as before");
 
   // ── 收合、展開 ──
   await node(page, "目標").click();

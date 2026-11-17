@@ -5,7 +5,10 @@ import * as Y from "yjs";
  * 心智圖資料模型（Yjs 文件）。和筆記本一樣用 Yjs，之後才能在多台裝置之間同步、合併。
  *
  *   meta   Y.Map  { schema, id, title, root, structure, theme, createdAt }
- *   nodes  Y.Map  nodeId → Y.Map { parent, order, text, collapsed?, color?, pos?, style? }
+ *   nodes  Y.Map  nodeId → Y.Map { parent, order, text, collapsed?, color?, pos?, style?, at? }
+ *
+ * 獨立元件 = parent 是 null 的元件（中心元件以外）：沒有連到任何元件，位置記在 at = [x, y]（左上角，畫面座標）。
+ * 從元件拉線連到獨立元件，它就變成那個元件的子元件；刪掉連接線，子元件變回獨立元件。
  *
  * style = 這個主題自己的外觀設定（形狀、連到父主題的線型、粗細、虛線），沒設定的沿用主題樣式。
  *
@@ -144,6 +147,56 @@ export class MindMap {
       collapsed: !!m.get("collapsed"),
       ...(color ? { color } : {}),
     };
+  }
+
+  /** 獨立元件（沒有連到任何元件）：依建立順序 */
+  floatingIds(): string[] {
+    const out: { id: string; order: string }[] = [];
+    for (const [id, m] of this.nodes) if (id !== this.rootId && this.isFloating(id)) out.push({ id, order: (m.get("order") as string) ?? "" });
+    out.sort((a, b) => (a.order < b.order ? -1 : a.order > b.order ? 1 : a.id < b.id ? -1 : 1));
+    return out.map((f) => f.id);
+  }
+
+  isFloating(id: string): boolean {
+    const m = this.nodes.get(id);
+    return !!m && id !== this.rootId && m.get("parent") === null;
+  }
+
+  /** 獨立元件的位置（左上角） */
+  at(id: string): Offset | undefined {
+    return this.nodes.get(id)?.get("at") as Offset | undefined;
+  }
+
+  setAt(id: string, at: Offset): void {
+    if (this.isFloating(id)) this.nodes.get(id)!.set("at", [round1(at[0]), round1(at[1])]);
+  }
+
+  /** 新增獨立元件（不連到任何元件） */
+  addFloating(text: string, at: Offset): string {
+    const id = newId();
+    this.doc.transact(() => {
+      const m = new Y.Map<unknown>();
+      m.set("parent", null);
+      const last = this.floatingIds().pop();
+      m.set("order", generateKeyBetween(last ? ((this.nodes.get(last)!.get("order") as string) || null) : null, null));
+      m.set("text", text);
+      m.set("at", [round1(at[0]), round1(at[1])]);
+      this.nodes.set(id, m);
+    });
+    return id;
+  }
+
+  /** 拆掉連到上層的線：元件（和它底下的元件）變成獨立元件，放在 at */
+  detach(id: string, at: Offset): boolean {
+    const m = this.nodes.get(id);
+    if (!m || id === this.rootId || this.isFloating(id)) return false;
+    this.doc.transact(() => {
+      m.set("parent", null);
+      m.set("order", generateKeyBetween(this.floatingIds().map((f) => (this.nodes.get(f)!.get("order") as string) || null).pop() ?? null, null));
+      m.set("at", [round1(at[0]), round1(at[1])]);
+      if (m.has("pos")) m.delete("pos");
+    });
+    return true;
   }
 
   /** 子節點（依順序） */
@@ -291,8 +344,9 @@ export class MindMap {
       m.set("order", this.orderAt(parent, index, id));
       if (m.get("parent") !== parent) {
         m.set("parent", parent);
-        // 換到別的父節點：原本拖動的位移是相對舊位置的，清掉
+        // 換到別的父節點：原本拖動的位移是相對舊位置的，清掉；獨立元件連上之後不再用 at
         if (m.has("pos")) m.delete("pos");
+        if (m.has("at")) m.delete("at");
       }
       this.nodes.get(parent)!.delete("collapsed");
     });
@@ -309,19 +363,24 @@ export class MindMap {
     return this.move(id, parent, i);
   }
 
-  /** 排版用的樹 */
-  tree(structure: Structure = this.structure): TreeNode {
+  /** 排版用的樹（中心元件；`top` = 從某個獨立元件開始） */
+  tree(structure: Structure = this.structure, top: string = this.rootId): TreeNode {
     const index = this.childIndex();
     const build = (id: string): TreeNode => {
       const n = this.node(id)!;
       const kids = index.get(id) ?? [];
-      const offset = id === this.rootId ? undefined : this.offset(id, structure);
+      const offset = id === top ? undefined : this.offset(id, structure);
       const style = this.nodeStyle(id);
       const extra = { ...(offset ? { offset } : {}), ...(style ? { style } : {}) };
       if (n.collapsed && kids.length) return { ...n, ...extra, children: [], hidden: countBelow(id, index) };
       return { ...n, ...extra, children: kids.map(build), hidden: 0 };
     };
-    return build(this.rootId);
+    return build(top);
+  }
+
+  /** 每個獨立元件的樹（at = 位置） */
+  floating(structure: Structure = this.structure): (TreeNode & { at: Offset })[] {
+    return this.floatingIds().map((id) => ({ ...this.tree(structure, id), at: this.at(id) ?? [0, 0] }));
   }
 
   /** 匯出成 Markdown 大綱（每層縮排兩格） */
@@ -335,6 +394,11 @@ export class MindMap {
       }
     };
     walk(this.rootId, 0);
+    // 獨立元件各自一段
+    for (const f of this.floatingIds()) {
+      lines.push("", `# ${oneLine(this.node(f)!.text)}`);
+      walk(f, 0);
+    }
     return lines.join("\n") + "\n";
   }
 
@@ -390,18 +454,21 @@ export class MindMap {
     return out;
   }
 
-  /** 存的父節點，但遇到迴圈或父節點不存在時改為中心主題 */
+  /** 存的父節點，但遇到迴圈或父節點不存在時改為中心元件；獨立元件回傳 null */
   private effectiveParent(id: string): string | null {
     const root = this.rootId;
     if (id === root) return null;
     const stored = this.nodes.get(id)?.get("parent") as string | null | undefined;
+    if (stored === null) return null;
     if (!stored || !this.nodes.has(stored)) return root;
-    // 往上走到中心主題；走不到（迴圈）就接到中心主題
+    // 往上走到中心元件或獨立元件；走不到（迴圈）就接到中心元件
     const seen = new Set([id]);
     for (let p: string | null | undefined = stored; p !== root; ) {
       if (!p || seen.has(p) || !this.nodes.has(p)) return root;
       seen.add(p);
-      p = this.nodes.get(p)!.get("parent") as string | null | undefined;
+      const up = this.nodes.get(p)!.get("parent") as string | null | undefined;
+      if (up === null) break;
+      p = up;
     }
     return stored;
   }

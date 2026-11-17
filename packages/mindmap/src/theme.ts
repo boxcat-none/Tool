@@ -152,8 +152,8 @@ export function themeById(id: string): Theme {
   return THEMES.find((t) => t.id === id) ?? THEMES[0];
 }
 
-/** 每個節點的分支顏色：第一層依序用主題的顏色；節點有自訂顏色時，它和它底下都用那個顏色 */
-export function branchColors(tree: TreeNode, theme: Theme): Map<string, string> {
+/** 每個節點的分支顏色：第一層（和獨立元件）依序用主題的顏色；節點有自訂顏色時，它和它底下都用那個顏色 */
+export function branchColors(tree: TreeNode, theme: Theme, floating: TreeNode[] = []): Map<string, string> {
   const out = new Map<string, string>();
   const walk = (n: TreeNode, color: string) => {
     const c = n.color ?? color;
@@ -162,6 +162,8 @@ export function branchColors(tree: TreeNode, theme: Theme): Map<string, string> 
   };
   out.set(tree.id, tree.color ?? theme.palette[0]);
   tree.children.forEach((c, i) => walk(c, theme.palette[i % theme.palette.length]));
+  // 獨立元件接在第一層分支後面輪流用顏色
+  floating.forEach((f, i) => walk(f, theme.palette[(tree.children.length + i) % theme.palette.length]));
   return out;
 }
 

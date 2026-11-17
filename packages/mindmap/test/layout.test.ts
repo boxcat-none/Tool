@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { branchColors, dropTarget, edgePath, layoutTree, MindMap, moveNodes, neighbor, nodesInRect, segmentHitsRect, splitSides, subtreeIds, themeById, THEMES, topmost, type Layout, type Structure } from "../src";
+import { branchColors, dropTarget, edgePath, layoutForest, layoutTree, MindMap, moveNodes, neighbor, nodesInRect, segmentHitsRect, splitSides, subtreeIds, themeById, THEMES, topmost, type Layout, type Structure } from "../src";
 
 const measure = () => ({ width: 80, height: 20 });
 
@@ -249,5 +249,39 @@ describe("主題", () => {
     expect(c.get(ids[1])).toBe(theme.palette[1]);
     expect(c.get(kids[0])).toBe(theme.palette[0]);
     expect(c.get(kids[1])).toBe("#000000");
+  });
+});
+
+describe("layoutForest（獨立元件）", () => {
+  it("獨立元件放在自己的位置，深度從 1 算，子元件往右展開，不和中心的樹重疊", () => {
+    const { m } = sample();
+    const f = m.addFloating("獨立", [600, 300]);
+    const k = m.addChild(f, "子");
+    const l = layoutForest(m.tree("mindmap"), m.floating("mindmap"), measure, "mindmap");
+    const p = l.byId.get(f)!;
+    expect([p.x, p.y]).toEqual([600, 300]);
+    expect(p.parent).toBeNull();
+    expect(p.depth).toBe(1);
+    const c = l.byId.get(k)!;
+    expect(c.parent).toBe(f);
+    expect(c.depth).toBe(2);
+    expect(c.x).toBeGreaterThan(p.x + p.width);
+    expect(overlaps(l)).toBeNull();
+    expect(l.bounds.x + l.bounds.width).toBeGreaterThanOrEqual(c.x + c.width);
+  });
+
+  it("沒有獨立元件時和 layoutTree 一樣", () => {
+    const { m } = sample();
+    const a = layoutTree(m.tree(), measure, "org");
+    const b = layoutForest(m.tree(), [], measure, "org");
+    expect(b.nodes.map((n) => [n.id, n.x, n.y])).toEqual(a.nodes.map((n) => [n.id, n.x, n.y]));
+  });
+
+  it("分支顏色：獨立元件接在第一層分支後面輪流用", () => {
+    const { m, ids } = sample();
+    const f = m.addFloating("F", [0, 0]);
+    const theme = themeById("rainbow");
+    const c = branchColors(m.tree(), theme, m.floating());
+    expect(c.get(f)).toBe(theme.palette[ids.length % theme.palette.length]);
   });
 });

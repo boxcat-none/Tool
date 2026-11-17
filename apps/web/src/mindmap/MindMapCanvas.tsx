@@ -1,6 +1,7 @@
 import {
   branchColors,
   edgePath,
+  layoutForest,
   lineWidthAt,
   PORT_INSET,
   sketchJitter,
@@ -9,6 +10,7 @@ import {
   type MindMap,
   type NodeStyle,
   type Placed,
+  type Structure,
   type Theme,
   type TreeNode,
 } from "@tool/mindmap";
@@ -69,11 +71,16 @@ export function wrapLines(text: string, style: NodeStyle): { lines: string[]; wi
   return { lines, width: Math.ceil(Math.max(...lines.map((l) => w(l || " ")))) };
 }
 
-/** 節點大小：依文字（自動換行）與樣式的內距 */
+/** 元件的最小大小（有框的形狀；底線只有最小寬度）：字很少時元件也不會太小、比較好點 */
+export const MIN_WIDTH = 120;
+export const MIN_HEIGHT = 44;
+
+/** 節點大小：依文字（自動換行）與樣式的內距，不小於最小大小 */
 export function measureNode(text: string, style: NodeStyle, depth: number): { width: number; height: number } {
   const { lines, width: w } = wrapLines(text, style);
-  let width = Math.max(depth === 0 ? 80 : 36, w + style.padX * 2);
-  let height = Math.ceil(lines.length * style.fontSize * LINE_HEIGHT) + style.padY * 2;
+  const boxed = style.shape !== "underline";
+  let width = Math.max(depth === 0 ? MIN_WIDTH + 20 : boxed ? MIN_WIDTH : 80, w + style.padX * 2);
+  let height = Math.max(boxed ? MIN_HEIGHT : 0, Math.ceil(lines.length * style.fontSize * LINE_HEIGHT) + style.padY * 2);
   if (style.shape === "ellipse") {
     width = Math.ceil(width * 1.12);
     height = Math.ceil(height * 1.2);
@@ -82,14 +89,14 @@ export function measureNode(text: string, style: NodeStyle, depth: number): { wi
 }
 
 /** 自訂顏色（節點或祖先設定的），沒有設定的節點不在裡面 */
-export function customColors(tree: TreeNode): Map<string, string> {
+export function customColors(trees: TreeNode[]): Map<string, string> {
   const out = new Map<string, string>();
   const walk = (n: TreeNode, inherited?: string) => {
     const c = n.color ?? inherited;
     if (c) out.set(n.id, c);
     n.children.forEach((k) => walk(k, c));
   };
-  walk(tree);
+  trees.forEach((t) => walk(t));
   return out;
 }
 
@@ -97,22 +104,21 @@ export interface CanvasData {
   layout: Layout;
   theme: Theme;
   tree: TreeNode;
+  /** 中心元件的樹＋所有獨立元件的樹 */
+  forest: TreeNode[];
   /** 節點代號 → 節點（文字等） */
   nodes: Map<string, TreeNode>;
   styles: Map<string, NodeStyle>;
 }
 
 /** `editing` = 正在編輯的元件與目前打的字：元件跟著文字即時變大 */
-export function prepare(
-  map: MindMap,
-  layoutFn: (tree: TreeNode, styles: Map<string, NodeStyle>) => Layout,
-  theme: Theme,
-  editing?: { id: string; text: string },
-): CanvasData {
-  let tree = map.tree();
+export function prepare(map: MindMap, structure: Structure, theme: Theme, editing?: { id: string; text: string }): CanvasData {
+  const swap = <T extends TreeNode>(n: T): T => (n.id === editing!.id ? { ...n, text: editing!.text } : { ...n, children: n.children.map(swap) });
+  let tree = map.tree(structure);
+  let floating = map.floating(structure);
   if (editing) {
-    const swap = (n: TreeNode): TreeNode => (n.id === editing.id ? { ...n, text: editing.text } : { ...n, children: n.children.map(swap) });
     tree = swap(tree);
+    floating = floating.map(swap);
   }
   const nodes = new Map<string, TreeNode>();
   const depthOf = new Map<string, number>();
@@ -122,10 +128,13 @@ export function prepare(
     n.children.forEach((c) => walk(c, d + 1));
   };
   walk(tree, 0);
-  const colors = branchColors(tree, theme);
+  // 獨立元件的外觀和一般元件一樣（深度從 1 算）
+  floating.forEach((f) => walk(f, 1));
+  const colors = branchColors(tree, theme, floating);
   const styles = new Map<string, NodeStyle>();
   for (const [id, d] of depthOf) styles.set(id, withOverride(theme, theme.style(d, colors.get(id)!), nodes.get(id)!.style?.shape, colors.get(id)!));
-  return { layout: layoutFn(tree, styles), theme, tree, nodes, styles };
+  const layout = layoutForest(tree, floating, (n) => measureNode(n.text, styles.get(n.id)!, depthOf.get(n.id)!), structure);
+  return { layout, theme, tree, forest: [tree, ...floating], nodes, styles };
 }
 
 const isDark = (hex: string) => {
@@ -163,8 +172,8 @@ export interface EdgeInfo {
 
 /** 所有連接線（畫線、點選線條、框選共用） */
 export function edgeList(data: CanvasData, layout: Layout = data.layout): EdgeInfo[] {
-  const { theme, styles, nodes, tree } = data;
-  const custom = customColors(tree);
+  const { theme, styles, nodes, forest } = data;
+  const custom = customColors(forest);
   const horizontal = layout.structure === "mindmap" || layout.structure === "logic";
   const inset = theme.port && horizontal ? PORT_INSET : 0;
   const out: EdgeInfo[] = [];
@@ -198,8 +207,8 @@ export function edgeList(data: CanvasData, layout: Layout = data.layout): EdgeIn
  * 心智圖內容。`layout` 可以傳拖曳中的暫時排版（連接線跟著動）；`lifted` = 拖曳中的節點（畫在最上面、稍微透明）。
  */
 export function MindMapContent({ data, layout = data.layout, lifted, editing }: { data: CanvasData; layout?: Layout; lifted?: Set<string>; editing?: string }) {
-  const { theme, nodes, styles, tree } = data;
-  const custom = customColors(tree);
+  const { theme, nodes, styles, forest } = data;
+  const custom = customColors(forest);
   const horizontal = layout.structure === "mindmap" || layout.structure === "logic";
   const inset = theme.port && horizontal ? PORT_INSET : 0;
   const edges = edgeList(data, layout);

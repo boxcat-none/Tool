@@ -133,6 +133,36 @@ export function layoutTree(
   return finish(out, structure, tree);
 }
 
+/**
+ * 整張圖：中心元件的樹＋每個獨立元件（沒有連到任何元件）的樹。
+ * 獨立元件放在自己的 at（左上角），它底下的元件往右（組織圖往下）展開；深度從 1 算起（外觀和一般元件一樣）。
+ */
+export function layoutForest(
+  main: TreeNode,
+  floating: (TreeNode & { at: [number, number] })[],
+  measure: (node: TreeNode, depth: number) => Size,
+  structure: Structure,
+): Layout {
+  const base = layoutTree(main, measure, structure);
+  if (!floating.length) return base;
+  const out = new Map(base.byId);
+  const nodes = [...base.nodes];
+  const sub: Structure = structure === "mindmap" ? "logic" : structure;
+  floating.forEach((f, i) => {
+    const l = layoutTree(f, (n, d) => measure(n, d + 1), sub);
+    const top = l.byId.get(f.id)!;
+    const dx = f.at[0] - top.x;
+    const dy = f.at[1] - top.y;
+    const branch = main.children.length + i;
+    for (const n of l.nodes) {
+      const p: Placed = { ...n, x: n.x + dx, y: n.y + dy, depth: n.depth + 1, side: 1, branch };
+      out.set(p.id, p);
+      nodes.push(p);
+    }
+  });
+  return finish(out, structure, undefined, nodes);
+}
+
 /** 第一層分支分到右邊和左邊：依序放右邊，直到右邊的高度超過一半 */
 export function splitSides(extents: number[]): [number[], number[]] {
   const total = extents.reduce((a, b) => a + b, 0);
