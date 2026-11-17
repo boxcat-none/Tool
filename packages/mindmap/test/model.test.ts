@@ -172,6 +172,29 @@ describe("自由拖動的位置", () => {
   });
 });
 
+describe("單一主題的外觀設定", () => {
+  it("設定形狀、線型、粗細、虛線；null／false 回到預設；tree() 帶出", () => {
+    const { m, a, b } = sample();
+    expect(m.nodeStyle(a)).toBeUndefined();
+    m.setNodeStyle([a, b], { shape: "ellipse", line: "elbow", width: 5, dash: true });
+    expect(m.nodeStyle(a)).toEqual({ shape: "ellipse", line: "elbow", width: 5, dash: true });
+    m.setNodeStyle([a], { line: null, dash: false });
+    expect(m.nodeStyle(a)).toEqual({ shape: "ellipse", width: 5 });
+    expect(m.tree().children.find((n) => n.id === b)!.style).toMatchObject({ dash: true });
+    m.setNodeStyle([a], { shape: null, width: null });
+    expect(m.nodeStyle(a)).toBeUndefined();
+  });
+
+  it("一次改多個是一個復原步驟", () => {
+    const { m, a, b } = sample();
+    const undo = m.createUndoManager(LOCAL);
+    m.doc.transact(() => m.setNodeStyle([a, b], { line: "straight" }), LOCAL);
+    undo.undo();
+    expect(m.nodeStyle(a)).toBeUndefined();
+    expect(m.nodeStyle(b)).toBeUndefined();
+  });
+});
+
 describe("多台裝置合併", () => {
   it("兩邊各自新增節點，合併後都在", () => {
     const { m, r } = sample();

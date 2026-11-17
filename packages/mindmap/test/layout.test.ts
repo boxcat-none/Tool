@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { branchColors, dropTarget, edgePath, layoutTree, MindMap, neighbor, splitSides, themeById, THEMES, type Layout, type Structure } from "../src";
+import { branchColors, dropTarget, edgePath, layoutTree, MindMap, moveNodes, neighbor, nodesInRect, segmentHitsRect, splitSides, subtreeIds, themeById, THEMES, topmost, type Layout, type Structure } from "../src";
 
 const measure = () => ({ width: 80, height: 20 });
 
@@ -111,6 +111,40 @@ describe("layoutTree", () => {
     const child = l.byId.get(ids[1])!;
     expect(child.x + child.width).toBeLessThan(root.x);
     expect(edgePath(l, root, child, "straight")).toBe(`M${root.x} ${root.y + root.height / 2}L${child.x + child.width} ${child.y + child.height / 2}`);
+  });
+
+  it("拖曳預覽 moveNodes：只移動指定的節點，原本的排版不變", () => {
+    const { m, ids, kids } = sample();
+    const l = layoutTree(m.tree(), measure, "logic");
+    const group = subtreeIds(l, [ids[0]]);
+    expect([...group].sort()).toEqual([ids[0], ...kids].sort());
+    const moved = moveNodes(l, group, 30, -10);
+    expect(moved.byId.get(kids[0])!.x).toBe(l.byId.get(kids[0])!.x + 30);
+    expect(moved.byId.get(ids[1])).toBe(l.byId.get(ids[1]));
+    expect(moved.nodes.map((n) => n.id)).toEqual(l.nodes.map((n) => n.id));
+    expect(l.byId.get(kids[0])!.x).not.toBe(moved.byId.get(kids[0])!.x);
+    expect(moveNodes(l, group, 0, 0)).toBe(l);
+  });
+
+  it("topmost：祖先也選了的節點拿掉（一起拖動時不會移動兩次）", () => {
+    const { m, r, ids, kids } = sample();
+    const l = layoutTree(m.tree(), measure, "logic");
+    expect(topmost(l, [kids[0], ids[0], ids[1]]).sort()).toEqual([ids[0], ids[1]].sort());
+    expect(topmost(l, [r, ids[2]])).toEqual([r]);
+  });
+
+  it("框選：矩形碰到的節點；線段是否穿過矩形", () => {
+    const { m, ids } = sample();
+    const l = layoutTree(m.tree(), measure, "logic");
+    const a = l.byId.get(ids[1])!;
+    const b = l.byId.get(ids[2])!;
+    // 反方向拉的框也可以
+    expect(nodesInRect(l, [b.x + b.width - 1, b.y + b.height - 1, a.x + 1, a.y + 1]).sort()).toEqual([ids[1], ids[2]].sort());
+    expect(nodesInRect(l, [9000, 9000, 9100, 9100])).toEqual([]);
+    expect(segmentHitsRect(0, 0, 100, 100, [40, 40, 60, 60])).toBe(true);
+    expect(segmentHitsRect(0, 0, 100, 0, [40, 10, 60, 20])).toBe(false);
+    expect(segmentHitsRect(50, 50, 55, 55, [40, 40, 60, 60])).toBe(true);
+    expect(segmentHitsRect(0, 100, 100, 0, [0, 0, 20, 20])).toBe(false);
   });
 
   it("收合的節點：子節點不排版", () => {

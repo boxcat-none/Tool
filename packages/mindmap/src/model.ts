@@ -5,7 +5,9 @@ import * as Y from "yjs";
  * 心智圖資料模型（Yjs 文件）。和筆記本一樣用 Yjs，之後才能在多台裝置之間同步、合併。
  *
  *   meta   Y.Map  { schema, id, title, root, structure, theme, createdAt }
- *   nodes  Y.Map  nodeId → Y.Map { parent, order, text, collapsed?, color?, pos? }
+ *   nodes  Y.Map  nodeId → Y.Map { parent, order, text, collapsed?, color?, pos?, style? }
+ *
+ * style = 這個主題自己的外觀設定（形狀、連到父主題的線型、粗細、虛線），沒設定的沿用主題樣式。
  *
  * pos = 使用者自由拖動後的位移 { 結構: [dx, dy] }（相對於自動排版的位置，子節點跟著移動）。
  * 每種結構各自記錄：在心智圖裡拖過的位置不會影響組織圖。
@@ -39,6 +41,16 @@ export interface MindNode {
 
 export type Offset = [dx: number, dy: number];
 
+/** 單一主題的外觀設定（覆蓋樣式主題的預設） */
+export interface NodeOverride {
+  shape?: "rounded" | "pill" | "rect" | "card" | "ellipse" | "underline";
+  /** 連到父主題的線 */
+  line?: "curve" | "elbow" | "straight";
+  /** 線寬（px） */
+  width?: number;
+  dash?: boolean;
+}
+
 /** 排版用的樹（已排序、已處理迴圈；收合的節點沒有 children） */
 export interface TreeNode extends MindNode {
   children: TreeNode[];
@@ -46,6 +58,8 @@ export interface TreeNode extends MindNode {
   hidden: number;
   /** 目前結構下自由拖動的位移（沒有拖過 = undefined） */
   offset?: Offset;
+  /** 這個主題自己的外觀設定 */
+  style?: NodeOverride;
 }
 
 export class MindMap {
@@ -226,6 +240,29 @@ export class MindMap {
     return false;
   }
 
+  /** 這個主題自己的外觀設定（沒有 = undefined） */
+  nodeStyle(id: string): NodeOverride | undefined {
+    const s = this.nodes.get(id)?.get("style") as NodeOverride | undefined;
+    return s && Object.keys(s).length ? s : undefined;
+  }
+
+  /** 修改外觀設定：patch 裡的欄位設成 null = 回到樣式主題的預設 */
+  setNodeStyle(ids: Iterable<string>, patch: { [K in keyof NodeOverride]?: NodeOverride[K] | null }): void {
+    this.doc.transact(() => {
+      for (const id of ids) {
+        const m = this.nodes.get(id);
+        if (!m) continue;
+        const next: Record<string, unknown> = { ...((m.get("style") as NodeOverride | undefined) ?? {}) };
+        for (const [k, v] of Object.entries(patch)) {
+          if (v === null || v === undefined || v === false) delete next[k];
+          else next[k] = v;
+        }
+        if (Object.keys(next).length) m.set("style", next);
+        else if (m.has("style")) m.delete("style");
+      }
+    });
+  }
+
   /** 刪除節點與它底下所有節點（中心主題不能刪） */
   remove(ids: Iterable<string>): void {
     const index = this.childIndex();
@@ -279,7 +316,8 @@ export class MindMap {
       const n = this.node(id)!;
       const kids = index.get(id) ?? [];
       const offset = id === this.rootId ? undefined : this.offset(id, structure);
-      const extra = offset ? { offset } : {};
+      const style = this.nodeStyle(id);
+      const extra = { ...(offset ? { offset } : {}), ...(style ? { style } : {}) };
       if (n.collapsed && kids.length) return { ...n, ...extra, children: [], hidden: countBelow(id, index) };
       return { ...n, ...extra, children: kids.map(build), hidden: 0 };
     };

@@ -71,49 +71,110 @@ export function prepare(map: MindMap, layoutFn: (tree: TreeNode, styles: Map<str
   walk(tree, 0);
   const colors = branchColors(tree, theme);
   const styles = new Map<string, NodeStyle>();
-  for (const [id, d] of depthOf) styles.set(id, theme.style(d, colors.get(id)!));
+  for (const [id, d] of depthOf) styles.set(id, withOverride(theme, theme.style(d, colors.get(id)!), nodes.get(id)!.style?.shape, colors.get(id)!));
   return { layout: layoutFn(tree, styles), theme, tree, nodes, styles };
 }
 
-/** dim = 拖曳中的節點（和它底下的節點），畫淡一點 */
-export function MindMapContent({ data, dim }: { data: CanvasData; dim?: Set<string> }) {
-  const { layout, theme, nodes, styles, tree } = data;
+const isDark = (hex: string) => {
+  const v = parseInt(hex.slice(1), 16);
+  return ((v >> 16) & 255) * 0.299 + ((v >> 8) & 255) * 0.587 + (v & 255) * 0.114 < 128;
+};
+
+/** 套用單一主題的形狀設定：從「底線」改成有框的形狀時用框線；從有底色改成底線時文字改用看得到的顏色 */
+function withOverride(theme: Theme, st: NodeStyle, shape: NodeShapeName | undefined, branch: string): NodeStyle {
+  if (!shape || shape === st.shape) return st;
+  if (shape === "underline") {
+    const line = st.fill !== "none" ? st.fill : st.stroke !== "none" ? st.stroke : branch;
+    return { ...st, shape, fill: "none", stroke: line, strokeWidth: 2, text: isDark(theme.background) ? "#f1f0f4" : "#212529", padX: 4, padY: 5 };
+  }
+  if (st.shape === "underline") {
+    return { ...st, shape, fill: "none", stroke: st.stroke !== "none" ? st.stroke : branch, strokeWidth: 1.5, padX: Math.max(st.padX, shape === "card" ? 28 : 12), padY: Math.max(st.padY, 7) };
+  }
+  return { ...st, shape, padX: shape === "card" ? Math.max(st.padX, 28) : st.padX };
+}
+
+type NodeShapeName = NonNullable<NonNullable<TreeNode["style"]>["shape"]>;
+
+/** 一條連接線（以子主題代號為代號） */
+export interface EdgeInfo {
+  id: string;
+  parent: string;
+  d: string;
+  color: string;
+  width: number;
+  dash: boolean;
+  /** 兩端點（框選、連接點用） */
+  from: [number, number];
+  to: [number, number];
+}
+
+/** 所有連接線（畫線、點選線條、框選共用） */
+export function edgeList(data: CanvasData, layout: Layout = data.layout): EdgeInfo[] {
+  const { theme, styles, nodes, tree } = data;
   const custom = customColors(tree);
   const horizontal = layout.structure === "mindmap" || layout.structure === "logic";
   const inset = theme.port && horizontal ? PORT_INSET : 0;
-  const edges: JSX.Element[] = [];
-  const ports: JSX.Element[] = [];
+  const out: EdgeInfo[] = [];
   for (const child of layout.nodes) {
     if (!child.parent) continue;
-    const parent = layout.byId.get(child.parent)!;
+    const parent = layout.byId.get(child.parent);
+    if (!parent) continue;
+    const own = nodes.get(child.id)?.style;
     const underline = styles.get(child.id)!.shape === "underline";
-    let d = edgePath(layout, parent, child, theme.edge, { underline, portInset: inset });
+    let d = edgePath(layout, parent, child, own?.line ?? theme.edge, { underline, portInset: inset });
     if (theme.sketchy) {
       const j = sketchJitter(child.id);
       d = d.replace(/-?\d+(\.\d+)?/g, (m) => String(Math.round(j(Number(m)) * 10) / 10));
     }
-    const color = theme.coloredLines ? styles.get(child.id)!.stroke : custom.get(child.id) ?? theme.lineColor;
-    edges.push(
-      <path key={child.id} d={d} fill="none" stroke={color} strokeWidth={lineWidthAt(theme, child.depth)} strokeLinecap="round" opacity={dim?.has(child.id) ? 0.3 : 1} />,
-    );
-    if (theme.port) {
-      // 連接點：畫在線的兩端
-      const nums = d.match(/-?\d+(\.\d+)?/g)!.map(Number);
-      const portColor = custom.get(child.id) ?? theme.port;
-      // 中心主題（標籤）沒有連接點，線直接從邊上出來
-      if (parent.depth) ports.push(<circle key={`s${child.id}`} cx={nums[0]} cy={nums[1]} r={3.6} fill={custom.get(parent.id) ?? theme.port} />);
-      ports.push(<circle key={`e${child.id}`} cx={nums[nums.length - 2]} cy={nums[nums.length - 1]} r={3.6} fill={portColor} />);
-    }
+    const nums = d.match(/-?\d+(\.\d+)?/g)!.map(Number);
+    out.push({
+      id: child.id,
+      parent: parent.id,
+      d,
+      color: theme.coloredLines ? styles.get(child.id)!.stroke : custom.get(child.id) ?? theme.lineColor,
+      width: own?.width ?? lineWidthAt(theme, child.depth),
+      dash: !!own?.dash,
+      from: [nums[0], nums[1]],
+      to: [nums[nums.length - 2], nums[nums.length - 1]],
+    });
   }
+  return out;
+}
+
+/**
+ * 心智圖內容。`layout` 可以傳拖曳中的暫時排版（連接線跟著動）；`lifted` = 拖曳中的節點（畫在最上面、稍微透明）。
+ */
+export function MindMapContent({ data, layout = data.layout, lifted }: { data: CanvasData; layout?: Layout; lifted?: Set<string> }) {
+  const { theme, nodes, styles, tree } = data;
+  const custom = customColors(tree);
+  const horizontal = layout.structure === "mindmap" || layout.structure === "logic";
+  const inset = theme.port && horizontal ? PORT_INSET : 0;
+  const edges = edgeList(data, layout);
+  // 拖曳中的節點畫在最後（在其他節點上面）
+  const order = lifted ? [...layout.nodes.filter((n) => !lifted.has(n.id)), ...layout.nodes.filter((n) => lifted.has(n.id))] : layout.nodes;
   return (
     <>
-      <g className="mm-edges">{edges}</g>
-      <g className="mm-nodes">
-        {layout.nodes.map((n) => (
-          <NodeShape key={n.id} placed={n} node={nodes.get(n.id)!} style={styles.get(n.id)!} theme={theme} inset={inset} portColor={custom.get(n.id) ?? theme.port} dim={dim?.has(n.id)} structure={layout.structure} />
+      <g className="mm-edges">
+        {edges.map((e) => (
+          <path key={e.id} d={e.d} fill="none" stroke={e.color} strokeWidth={e.width} strokeLinecap="round" strokeDasharray={e.dash ? `${e.width * 3} ${e.width * 2.5}` : undefined} />
         ))}
       </g>
-      <g className="mm-ports">{ports}</g>
+      <g className="mm-nodes">
+        {order.map((n) => (
+          <NodeShape key={n.id} placed={n} node={nodes.get(n.id)!} style={styles.get(n.id)!} theme={theme} inset={inset} portColor={custom.get(n.id) ?? theme.port} ghost={lifted?.has(n.id)} structure={layout.structure} />
+        ))}
+      </g>
+      {theme.port && (
+        <g className="mm-ports">
+          {edges.map((e) => (
+            <g key={e.id}>
+              {/* 中心主題（標籤）沒有連接點，線直接從邊上出來 */}
+              {layout.byId.get(e.parent)!.depth > 0 && <circle cx={e.from[0]} cy={e.from[1]} r={3.6} fill={custom.get(e.parent) ?? theme.port} />}
+              <circle cx={e.to[0]} cy={e.to[1]} r={3.6} fill={custom.get(e.id) ?? theme.port} />
+            </g>
+          ))}
+        </g>
+      )}
     </>
   );
 }
@@ -185,7 +246,7 @@ export function NodeShape({
   const horizontalPorts = st.shape === "card" && inset > 0 && portColor;
   const badge = node.hidden > 0 ? collapsedBadge(n, structure, theme) : null;
   return (
-    <g data-node={n.id} transform={`translate(${n.x} ${n.y})`} opacity={dim ? 0.35 : ghost ? 0.75 : 1} style={{ cursor: ghost ? "grabbing" : "pointer" }}>
+    <g data-node={n.id} transform={`translate(${n.x} ${n.y})`} opacity={dim ? 0.35 : ghost ? 0.85 : 1} style={{ cursor: ghost ? "grabbing" : "pointer" }}>
       {shape}
       {horizontalPorts && (
         <>

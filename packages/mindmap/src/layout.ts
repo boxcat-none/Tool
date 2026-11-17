@@ -147,6 +147,66 @@ export function splitSides(extents: number[]): [number[], number[]] {
   return [right, left];
 }
 
+/** 拖曳預覽：把某些節點暫時移動 (dx, dy)，回傳新的排版（原本的不變），連接線就能跟著畫 */
+export function moveNodes(layout: Layout, ids: Iterable<string>, dx: number, dy: number): Layout {
+  const set = new Set(ids);
+  if (!set.size || (!dx && !dy)) return layout;
+  const byId = new Map<string, Placed>();
+  const nodes = layout.nodes.map((n) => {
+    const p = set.has(n.id) ? { ...n, x: n.x + dx, y: n.y + dy } : n;
+    byId.set(p.id, p);
+    return p;
+  });
+  return finish(byId, layout.structure, undefined, nodes);
+}
+
+/** 節點和它底下所有節點的代號 */
+export function subtreeIds(layout: Layout, roots: Iterable<string>): Set<string> {
+  const out = new Set<string>();
+  const walk = (id: string) => {
+    if (out.has(id)) return;
+    out.add(id);
+    layout.byId.get(id)?.children.forEach(walk);
+  };
+  for (const r of roots) if (layout.byId.has(r)) walk(r);
+  return out;
+}
+
+/** 只留下最上層的（祖先也在清單裡的拿掉）：一起拖動時子樹不會被移動兩次 */
+export function topmost(layout: Layout, ids: Iterable<string>): string[] {
+  const set = new Set(ids);
+  return [...set].filter((id) => {
+    for (let p = layout.byId.get(id)?.parent ?? null; p; p = layout.byId.get(p)?.parent ?? null) if (set.has(p)) return false;
+    return true;
+  });
+}
+
+/** 框選：和矩形 [x0, y0, x1, y1]（任意方向）重疊的節點 */
+export function nodesInRect(layout: Layout, rect: [number, number, number, number]): string[] {
+  const [ax, bx] = rect[0] < rect[2] ? [rect[0], rect[2]] : [rect[2], rect[0]];
+  const [ay, by] = rect[1] < rect[3] ? [rect[1], rect[3]] : [rect[3], rect[1]];
+  return layout.nodes.filter((n) => n.x < bx && n.x + n.width > ax && n.y < by && n.y + n.height > ay).map((n) => n.id);
+}
+
+/** 線段 (x1,y1)-(x2,y2) 是否穿過矩形（框選線條用；曲線用兩端點的直線近似） */
+export function segmentHitsRect(x1: number, y1: number, x2: number, y2: number, rect: [number, number, number, number]): boolean {
+  const [ax, bx] = rect[0] < rect[2] ? [rect[0], rect[2]] : [rect[2], rect[0]];
+  const [ay, by] = rect[1] < rect[3] ? [rect[1], rect[3]] : [rect[3], rect[1]];
+  // Liang–Barsky 裁切
+  let t0 = 0, t1 = 1;
+  const dx = x2 - x1, dy = y2 - y1;
+  for (const [p, q] of [[-dx, x1 - ax], [dx, bx - x1], [-dy, y1 - ay], [dy, by - y1]] as const) {
+    if (p === 0) {
+      if (q < 0) return false;
+    } else {
+      const r = q / p;
+      if (p < 0) { if (r > t1) return false; if (r > t0) t0 = r; }
+      else { if (r < t0) return false; if (r < t1) t1 = r; }
+    }
+  }
+  return true;
+}
+
 /** 套用自由拖動的位移：節點和它底下的節點一起移動 */
 function applyOffsets(out: Map<string, Placed>, tree: TreeNode) {
   const walk = (n: TreeNode, dx: number, dy: number) => {
@@ -162,14 +222,14 @@ function applyOffsets(out: Map<string, Placed>, tree: TreeNode) {
   walk(tree, 0, 0);
 }
 
-function finish(out: Map<string, Placed>, structure: Structure, tree?: TreeNode): Layout {
+function finish(out: Map<string, Placed>, structure: Structure, tree?: TreeNode, ordered?: Placed[]): Layout {
   if (tree) applyOffsets(out, tree);
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const n of out.values()) {
     x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y);
     x1 = Math.max(x1, n.x + n.width); y1 = Math.max(y1, n.y + n.height);
   }
-  return { structure, nodes: [...out.values()], byId: out, bounds: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } };
+  return { structure, nodes: ordered ?? [...out.values()], byId: out, bounds: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } };
 }
 
 // ── 連接線 ──────────────────────────────────────────

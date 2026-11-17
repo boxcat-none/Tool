@@ -2,37 +2,46 @@ import {
   dropTarget,
   layoutTree,
   MINDMAP_EXTENSION,
+  moveNodes,
   neighbor,
-  PORT_INSET,
+  nodesInRect,
   saveMindMapFile,
+  segmentHitsRect,
   STRUCTURES,
+  subtreeIds,
   THEMES,
   themeById,
+  topmost,
   type DropTarget,
+  type Layout,
   type MindMap,
+  type NodeOverride,
   type Structure,
 } from "@tool/mindmap";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { UndoManager } from "yjs";
 import { platform } from "../lib/platform";
-import { FONT, measureNode, MindMapContent, NodeShape, prepare } from "./MindMapCanvas";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { edgeList, FONT, measureNode, MindMapContent, prepare } from "./MindMapCanvas";
 import { metaOf, type MindMapStore } from "./store";
 
 /**
  * 心智圖編輯畫面。
  *
- * 操作：
- *   點一下選取；點兩下（或 F2、或直接打字）編輯文字；Enter 完成、Shift+Enter 換行、Esc 取消
- *   Tab 新增子主題、Enter 新增同層主題（Shift+Enter 加在前面）、Delete 刪除
- *   方向鍵移動選取、Alt+↑↓ 調整順序、空白鍵收合／展開、Ctrl+Z／Y 復原／重做
- *   拖曳節點：放在別的節點中間 = 變成它的子主題，靠上／靠下 = 插在前面／後面；
- *     放在空白處（或按住 Shift／Alt）= 自由放置，子主題一起移動；「自動排列」回到整齊排版
- *   拖曳空白處平移；滾輪捲動、Ctrl+滾輪或兩指縮放
- *   貼上多行文字：依縮排建立多個主題
+ * 滑鼠：
+ *   左鍵點主題／線條 = 選取（Shift 加選）；點兩下（或 F2、直接打字）編輯文字
+ *   左鍵按住背景拖曳 = 拉出選取框，框選主題與線條（Shift 加選）
+ *   右鍵按住背景（或任何地方）拖曳 = 移動整張圖；右鍵點一下 = 操作選單（主題、線條、背景各有不同選項）
+ *   拖曳主題：放到別的主題中間 = 變成它的子主題，靠上／靠下 = 插在前後；放在空白處（或按住 Shift／Alt）= 自由放置。
+ *     選了多個主題時一起自由移動。拖曳時連接線即時跟著動
+ * 觸控：一指拖背景 = 移動畫面、兩指縮放；觸控筆拖背景 = 框選；長按 = 操作選單
+ * 鍵盤：Tab 子主題、Enter 同層、Delete、方向鍵、Alt+↑↓、空白鍵收合、Ctrl+A 全選、Ctrl+Z／Y
+ * 貼上多行文字：依縮排建立多個主題
  */
 
 const LOCAL = "this-device";
 const NEW_TEXT = "新主題";
+const LONG_PRESS = 550;
 const COLORS: { label: string; value: string | null }[] = [
   { label: "預設", value: null },
   { label: "紅", value: "#e03131" },
@@ -44,12 +53,42 @@ const COLORS: { label: string; value: string | null }[] = [
   { label: "紫", value: "#7048e8" },
   { label: "粉", value: "#d6336c" },
 ];
+const SHAPES = [
+  { label: "預設", value: "" },
+  { label: "圓角", value: "rounded" },
+  { label: "膠囊", value: "pill" },
+  { label: "方框", value: "rect" },
+  { label: "卡片", value: "card" },
+  { label: "橢圓", value: "ellipse" },
+  { label: "底線", value: "underline" },
+];
+const LINES = [
+  { label: "預設", value: "" },
+  { label: "曲線", value: "curve" },
+  { label: "直角", value: "elbow" },
+  { label: "直線", value: "straight" },
+];
+const WIDTHS = [
+  { label: "預設", value: "" },
+  { label: "細", value: "1" },
+  { label: "中", value: "2.5" },
+  { label: "粗", value: "5" },
+];
 
 interface View {
   x: number;
   y: number;
   s: number;
 }
+
+/** 選取：主題、線條（以子主題代號表示），primary = 鍵盤與工具列操作的對象 */
+interface Selection {
+  nodes: Set<string>;
+  edges: Set<string>;
+  primary: string | null;
+}
+
+const single = (id: string | null): Selection => ({ nodes: new Set(id ? [id] : []), edges: new Set(), primary: id });
 
 interface Props {
   map: MindMap;
@@ -60,21 +99,25 @@ interface Props {
 
 export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
   const [version, setVersion] = useState(0);
-  const [selected, setSelected] = useState<string | null>(map.rootId);
+  const [sel, setSel] = useState<Selection>(() => single(map.rootId));
+  const selected = sel.primary;
+  const setSelected = (id: string | null) => setSel(single(id));
   const [editing, setEditing] = useState<{ id: string; text: string; fresh: boolean } | null>(null);
   const [view, setView] = useState<View>({ x: 0, y: 0, s: 1 });
-  /** 拖曳節點：target = 放到別的主題上（換位置）；null = 放在空白處（自由放置） */
-  const [drag, setDrag] = useState<{ id: string; dx: number; dy: number; target: DropTarget | null; blocked?: boolean } | null>(null);
+  /** 拖曳主題：ids = 一起移動的主題（含子主題）；target = 放到別的主題上（換位置）；null = 自由放置 */
+  const [drag, setDrag] = useState<{ roots: string[]; ids: Set<string>; dx: number; dy: number; target: DropTarget | null; blocked?: boolean } | null>(null);
+  /** 框選（排版座標） */
+  const [box, setBox] = useState<[number, number, number, number] | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; kind: "node" | "edge" | "background" } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [history, setHistory] = useState({ undo: false, redo: false });
   const hostRef = useRef<HTMLDivElement>(null);
-  const svgRef = useRef<SVGSVGElement>(null);
   const contentRef = useRef<SVGGElement>(null);
   const undoRef = useRef<UndoManager | null>(null);
 
   const act = useCallback((fn: () => void) => map.doc.transact(fn, LOCAL), [map]);
 
-  // 筆記本有任何變動（包含復原）就重畫、更新清單資訊
+  // 有任何變動（包含復原）就重畫、更新清單資訊
   useEffect(() => {
     const undo = map.createUndoManager(LOCAL);
     undoRef.current = undo;
@@ -116,11 +159,18 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
     [map, version, structure, theme],
   );
   const { layout } = data;
+  // 拖曳中：暫時移動的排版（連接線跟著動）
+  const shown = useMemo(() => (drag ? moveNodes(layout, drag.ids, drag.dx, drag.dy) : layout), [layout, drag]);
+  const edges = useMemo(() => edgeList(data, shown), [data, shown]);
 
-  // 選取的節點被刪掉（例如復原）時取消選取
+  // 選取的主題被刪掉（例如復原）時拿掉
   useEffect(() => {
-    if (selected && !layout.byId.has(selected)) setSelected(map.has(selected) ? null : map.rootId);
-  }, [layout, selected, map]);
+    const nodes = [...sel.nodes].filter((id) => layout.byId.has(id));
+    const edgeIds = [...sel.edges].filter((id) => layout.byId.has(id));
+    if (nodes.length === sel.nodes.size && edgeIds.length === sel.edges.size && (!sel.primary || layout.byId.has(sel.primary))) return;
+    const primary = sel.primary && layout.byId.has(sel.primary) ? sel.primary : nodes[0] ?? (map.has(sel.primary ?? "") ? null : map.rootId);
+    setSel({ nodes: new Set(primary && !nodes.length ? [primary] : nodes), edges: new Set(edgeIds), primary });
+  }, [layout, sel, map]);
 
   // ── 視圖：置中、縮放 ──────────────────────────────
 
@@ -169,12 +219,14 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
     });
   };
 
-  // 選取的節點跑到畫面外時，捲動讓它出現
+  /** 實際大小（100%），以畫面中心為準 */
+  const actualSize = () => zoomAt(1 / view.s);
+
+  // 選取的主題跑到畫面外時，捲動讓它出現
   const reveal = useCallback((id: string) => {
     const n = layout.byId.get(id);
     const host = hostRef.current?.getBoundingClientRect();
     if (!n || !host) return;
-    // 用最新的視圖計算（剛置中完的那一次更新可能還沒反映到這次的 render）
     setView((v) => {
       const m = 40;
       const x0 = n.x * v.s + v.x, y0 = n.y * v.s + v.y;
@@ -186,9 +238,10 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
     });
   }, [layout]);
 
+  // 只有單選（鍵盤、新增）時才自動捲動；框選很多個時不要動畫面
   useEffect(() => {
-    if (selected) reveal(selected);
-  }, [selected, reveal]);
+    if (selected && sel.nodes.size === 1) reveal(selected);
+  }, [selected, sel.nodes.size, reveal]);
 
   // ── 編輯動作 ──────────────────────────────────────
 
@@ -232,20 +285,28 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
     startEdit(created, "");
   };
 
+  /** 刪除選取的主題（中心主題不會被刪） */
   const removeSelected = () => {
-    if (!selected || selected === map.rootId) return;
-    const parent = map.parentOf(selected);
-    const sibs = parent ? map.children(parent) : [];
-    const i = sibs.indexOf(selected);
-    // 刪除後選取下一個同層（沒有就上一個，再沒有就父節點）
-    const next = sibs[i + 1] ?? sibs[i - 1] ?? parent;
-    act(() => map.remove([selected]));
-    setSelected(next);
+    const ids = [...sel.nodes].filter((id) => id !== map.rootId);
+    if (!ids.length) return;
+    const first = ids[0];
+    const parent = map.parentOf(first);
+    const sibs = parent ? map.children(parent).filter((c) => !sel.nodes.has(c)) : [];
+    const i = parent ? map.children(parent).indexOf(first) : -1;
+    // 刪除後選取下一個同層（沒有就上一個，再沒有就父主題）
+    const next = sibs.find((c) => map.children(parent!).indexOf(c) > i) ?? sibs[sibs.length - 1] ?? parent;
+    act(() => map.remove(ids));
+    setSelected(next && map.has(next) ? next : map.rootId);
   };
 
   const toggleCollapse = (id = selected) => {
     if (!id || !map.children(id).length) return;
     act(() => map.setCollapsed(id, !map.node(id)!.collapsed));
+  };
+
+  const selectAll = () => {
+    const ids = layout.nodes.map((n) => n.id);
+    setSel({ nodes: new Set(ids), edges: new Set(layout.nodes.filter((n) => n.parent).map((n) => n.id)), primary: selected ?? map.rootId });
   };
 
   const setStructure = (s: Structure) => act(() => (map.structure = s));
@@ -256,7 +317,7 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
-      if (editing || t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) return;
+      if (editing || menu || t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) return;
       const mod = e.ctrlKey || e.metaKey;
       const key = e.key;
       if (mod && (key === "z" || key === "Z") && !e.shiftKey) {
@@ -268,6 +329,9 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
       } else if (mod && (key === "s" || key === "S")) {
         e.preventDefault();
         void exportAs("gugamap");
+      } else if (mod && (key === "a" || key === "A")) {
+        e.preventDefault();
+        selectAll();
       } else if (mod && (key === "=" || key === "+")) {
         e.preventDefault();
         zoomAt(1.2);
@@ -277,6 +341,11 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
       } else if (mod && key === "0") {
         e.preventDefault();
         fit();
+      } else if (key === "Delete" || key === "Backspace") {
+        e.preventDefault();
+        removeSelected();
+      } else if (key === "Escape") {
+        setSelected(null);
       } else if (!selected || mod) {
         return;
       } else if (key === "Tab") {
@@ -285,9 +354,6 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
       } else if (key === "Enter") {
         e.preventDefault();
         addSibling(e.shiftKey);
-      } else if (key === "Delete" || key === "Backspace") {
-        e.preventDefault();
-        removeSelected();
       } else if (key === "F2") {
         e.preventDefault();
         startEdit(selected);
@@ -302,8 +368,6 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
         const dir = key.slice(5).toLowerCase() as "left" | "right" | "up" | "down";
         const next = neighbor(layout, selected, dir);
         if (next) setSelected(next);
-      } else if (key === "Escape") {
-        setSelected(null);
       } else if (key.length === 1 && !e.altKey) {
         // 直接打字：取代文字開始編輯
         e.preventDefault();
@@ -331,51 +395,123 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
     return () => window.removeEventListener("paste", onPaste);
   });
 
-  // ── 指標：選取、拖曳節點、平移、兩指縮放 ─────────────
+  // ── 指標 ──────────────────────────────────────────
 
+  type Hit = { kind: "node"; id: string } | { kind: "edge"; id: string } | { kind: "toggle"; id: string } | { kind: "background" };
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const gesture = useRef<
-    | { kind: "node"; id: string; pointerId: number; start: [number, number]; moved: boolean; view: View }
-    | { kind: "pan"; pointerId: number; start: [number, number]; view: View; moved: boolean }
+    | { kind: "node"; id: string; pointerId: number; start: [number, number]; moved: boolean; view: View; hit: Hit }
+    | { kind: "pan"; pointerId: number; start: [number, number]; view: View; moved: boolean; hit: Hit; button: number; pointerType: string }
+    | { kind: "box"; pointerId: number; start: [number, number]; moved: boolean; additive: boolean; base: Selection }
+    | { kind: "edge"; pointerId: number; start: [number, number]; moved: boolean; hit: Hit }
     | { kind: "pinch"; dist: number; mid: [number, number]; view: View }
     | null
   >(null);
   const lastTap = useRef<{ id: string; at: number } | null>(null);
+  const longPress = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const local = (e: { clientX: number; clientY: number }): [number, number] => {
     const r = hostRef.current!.getBoundingClientRect();
     return [e.clientX - r.left, e.clientY - r.top];
   };
-  const toMap = ([x, y]: [number, number]): [number, number] => [(x - view.x) / view.s, (y - view.y) / view.s];
+  const toMap = ([x, y]: [number, number], v: View = view): [number, number] => [(x - v.x) / v.s, (y - v.y) / v.s];
+
+  const hitOf = (el: Element): Hit => {
+    const toggle = el.closest("[data-toggle]")?.getAttribute("data-toggle");
+    if (toggle) return { kind: "toggle", id: toggle };
+    const node = el.closest("[data-node]")?.getAttribute("data-node");
+    if (node) return { kind: "node", id: node };
+    const edge = el.closest("[data-edge]")?.getAttribute("data-edge");
+    if (edge) return { kind: "edge", id: edge };
+    return { kind: "background" };
+  };
+
+  /** 右鍵（或長按）：選取按到的東西（已在選取範圍內就保留多選），然後開選單 */
+  const openMenu = (hit: Hit, at: [number, number]) => {
+    if (hit.kind === "node" || hit.kind === "toggle") {
+      if (!sel.nodes.has(hit.id)) setSel(single(hit.id));
+      else setSel({ ...sel, primary: hit.id });
+      setMenu({ x: at[0], y: at[1], kind: "node" });
+    } else if (hit.kind === "edge") {
+      if (!sel.edges.has(hit.id)) setSel({ nodes: new Set(), edges: new Set([hit.id]), primary: null });
+      setMenu({ x: at[0], y: at[1], kind: "edge" });
+    } else {
+      setMenu({ x: at[0], y: at[1], kind: "background" });
+    }
+  };
 
   const onPointerDown = (e: React.PointerEvent) => {
-    if (e.button !== 0 && e.pointerType === "mouse") return;
     if (e.target instanceof HTMLTextAreaElement) return; // 在編輯框裡點選文字
+    if (e.button === 1) return;
     if (editing) commitEdit();
+    setMenu(null);
     hostRef.current?.focus();
     const p = local(e);
     pointers.current.set(e.pointerId, { x: p[0], y: p[1] });
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    clearTimeout(longPress.current);
     if (pointers.current.size === 2) {
-      // 第二根手指：改成兩指縮放（取消拖曳）
+      // 第二根手指：改成兩指縮放（取消拖曳、框選）
       const [a, b] = [...pointers.current.values()];
       setDrag(null);
+      setBox(null);
       gesture.current = { kind: "pinch", dist: Math.hypot(a.x - b.x, a.y - b.y), mid: [(a.x + b.x) / 2, (a.y + b.y) / 2], view };
       return;
     }
-    const el = e.target as Element;
-    const toggle = el.closest("[data-toggle]")?.getAttribute("data-toggle");
-    if (toggle) {
-      toggleCollapse(toggle);
+    const hit = hitOf(e.target as Element);
+    // 右鍵：拖曳 = 移動整張圖；沒拖 = 選單（放開時判斷）
+    if (e.pointerType === "mouse" && e.button === 2) {
+      gesture.current = { kind: "pan", pointerId: e.pointerId, start: p, view, moved: false, hit, button: 2, pointerType: e.pointerType };
+      return;
+    }
+    if (e.pointerType !== "mouse") {
+      // 觸控、觸控筆：長按開選單
+      longPress.current = setTimeout(() => {
+        const g = gesture.current;
+        if (!g || g.kind === "pinch" || g.moved) return;
+        gesture.current = null;
+        setDrag(null);
+        setBox(null);
+        openMenu(hit, p);
+      }, LONG_PRESS);
+    }
+    if (hit.kind === "toggle") {
+      toggleCollapse(hit.id);
       gesture.current = null;
       return;
     }
-    const id = el.closest("[data-node]")?.getAttribute("data-node");
-    if (id) {
-      setSelected(id);
-      gesture.current = { kind: "node", id, pointerId: e.pointerId, start: p, moved: false, view };
+    if (hit.kind === "node") {
+      if (e.shiftKey) {
+        // Shift：加選／取消
+        const nodes = new Set(sel.nodes);
+        if (nodes.has(hit.id)) nodes.delete(hit.id);
+        else nodes.add(hit.id);
+        setSel({ ...sel, nodes, primary: nodes.has(hit.id) ? hit.id : [...nodes][0] ?? null });
+      } else if (!sel.nodes.has(hit.id)) {
+        setSel(single(hit.id));
+      } else {
+        setSel({ ...sel, primary: hit.id });
+      }
+      gesture.current = { kind: "node", id: hit.id, pointerId: e.pointerId, start: p, moved: false, view, hit };
+      return;
+    }
+    if (hit.kind === "edge") {
+      if (e.shiftKey) {
+        const edgesSel = new Set(sel.edges);
+        if (edgesSel.has(hit.id)) edgesSel.delete(hit.id);
+        else edgesSel.add(hit.id);
+        setSel({ ...sel, edges: edgesSel });
+      } else {
+        setSel({ nodes: new Set(), edges: new Set([hit.id]), primary: null });
+      }
+      gesture.current = { kind: "edge", pointerId: e.pointerId, start: p, moved: false, hit };
+      return;
+    }
+    // 背景：滑鼠左鍵、觸控筆 = 框選；手指 = 移動畫面
+    if (e.pointerType === "touch") {
+      gesture.current = { kind: "pan", pointerId: e.pointerId, start: p, view, moved: false, hit, button: 0, pointerType: e.pointerType };
     } else {
-      gesture.current = { kind: "pan", pointerId: e.pointerId, start: p, view, moved: false };
+      gesture.current = { kind: "box", pointerId: e.pointerId, start: toMap(p), moved: false, additive: e.shiftKey, base: sel };
     }
   };
 
@@ -395,28 +531,43 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
       return;
     }
     if (e.pointerId !== g.pointerId) return;
+    if (g.kind === "box") {
+      const m = toMap(p);
+      if (!g.moved && Math.hypot((m[0] - g.start[0]) * view.s, (m[1] - g.start[1]) * view.s) < 4) return;
+      g.moved = true;
+      clearTimeout(longPress.current);
+      setBox([g.start[0], g.start[1], m[0], m[1]]);
+      return;
+    }
     const dx = p[0] - g.start[0];
     const dy = p[1] - g.start[1];
     if (!g.moved && Math.hypot(dx, dy) < 5) return;
     g.moved = true;
+    clearTimeout(longPress.current);
+    if (g.kind === "edge") return;
     if (g.kind === "pan") {
       setView({ ...g.view, x: g.view.x + dx, y: g.view.y + dy });
-    } else if (g.id === map.rootId) {
+    } else if (g.id === map.rootId && !(sel.nodes.size > 1 && sel.nodes.has(g.id))) {
       // 拖中心主題 = 移動整張圖的畫面
       setView({ ...g.view, x: g.view.x + dx, y: g.view.y + dy });
     } else {
       const [mx, my] = toMap(p);
-      // 按住 Shift 或 Alt：一定是自由放置（即使在別的主題上）
-      const target = e.shiftKey || e.altKey ? null : dropTarget(layout, g.id, mx, my);
-      // 放到自己的子主題上：不能放（放開時什麼都不做）；還在自己身上 = 微調位置，照樣自由放置
+      // 一起移動的主題：選了多個 → 全部（中心主題除外）；否則只有這一個
+      const group = sel.nodes.size > 1 && sel.nodes.has(g.id) ? topmost(layout, [...sel.nodes].filter((id) => id !== map.rootId)) : [g.id];
+      const multi = group.length > 1;
+      // 按住 Shift 或 Alt、或多選：一定是自由放置
+      const free = e.shiftKey || e.altKey || multi;
+      const target = free ? null : dropTarget(layout, g.id, mx, my);
+      // 放到自己的子主題上：不能放；還在自己身上 = 微調位置，照樣自由放置
       const over = layout.nodes.find((n) => mx >= n.x && mx <= n.x + n.width && my >= n.y && my <= n.y + n.height && n.id !== g.id);
-      const blocked = !target && !!over && !(e.shiftKey || e.altKey) && isBelow(layout, g.id, over.id);
-      setDrag({ id: g.id, dx: dx / view.s, dy: dy / view.s, target, blocked });
+      const blocked = !target && !!over && !free && isBelow(layout, g.id, over.id);
+      setDrag({ roots: group, ids: subtreeIds(layout, group), dx: dx / view.s, dy: dy / view.s, target, blocked });
     }
   };
 
   const onPointerUp = (e: React.PointerEvent) => {
     pointers.current.delete(e.pointerId);
+    clearTimeout(longPress.current);
     const g = gesture.current;
     if (!g) return;
     if (g.kind === "pinch") {
@@ -425,26 +576,51 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
     }
     if (e.pointerId !== g.pointerId) return;
     gesture.current = null;
+    const cancel = e.type === "pointercancel";
     if (g.kind === "pan") {
-      if (!g.moved) setSelected(null);
+      if (!g.moved && !cancel) {
+        if (g.button === 2) openMenu(g.hit, local(e));
+        else if (g.pointerType === "touch") setSelected(null);
+      }
       return;
     }
+    if (g.kind === "box") {
+      const b = box;
+      setBox(null);
+      if (!g.moved) {
+        if (!g.additive) setSelected(null);
+        return;
+      }
+      if (!b || cancel) return;
+      // 框到的主題與線條（Shift：加到原本的選取）
+      const nodes = new Set(g.additive ? g.base.nodes : []);
+      const edgeSel = new Set(g.additive ? g.base.edges : []);
+      for (const id of nodesInRect(layout, b)) nodes.add(id);
+      for (const ed of edges) if (segmentHitsRect(ed.from[0], ed.from[1], ed.to[0], ed.to[1], b)) edgeSel.add(ed.id);
+      setSel({ nodes, edges: edgeSel, primary: [...nodes][0] ?? null });
+      return;
+    }
+    if (g.kind === "edge") return;
     if (g.moved) {
       const d = drag;
       setDrag(null);
-      if (!d || d.blocked || e.type === "pointercancel") return;
+      if (!d || d.blocked || cancel) return;
       if (d.target) {
-        act(() => map.move(d.id, d.target!.parent, d.target!.index));
+        act(() => map.move(g.id, d.target!.parent, d.target!.index));
       } else {
         // 放在空白處：停在放開的位置（記成相對自動排版的位移，子主題一起移動）
-        const old = map.offset(d.id) ?? [0, 0];
-        act(() => map.setOffset(d.id, [old[0] + d.dx, old[1] + d.dy]));
+        act(() => {
+          for (const id of d.roots) {
+            const old = map.offset(id) ?? [0, 0];
+            map.setOffset(id, [old[0] + d.dx, old[1] + d.dy]);
+          }
+        });
       }
       return;
     }
     // 點兩下編輯（滑鼠、觸控、觸控筆都一樣）
     const now = performance.now();
-    if (lastTap.current && lastTap.current.id === g.id && now - lastTap.current.at < 400) {
+    if (lastTap.current && lastTap.current.id === g.id && now - lastTap.current.at < 400 && !e.shiftKey) {
       lastTap.current = null;
       startEdit(g.id);
     } else {
@@ -522,25 +698,92 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
     return () => clearTimeout(t);
   }, [toast]);
 
+  // ── 選單內容 ──────────────────────────────────────
+
+  const styleValue = <K extends keyof NodeOverride>(ids: string[], key: K): string => {
+    const vals = new Set(ids.map((id) => String(map.nodeStyle(id)?.[key] ?? "")));
+    return vals.size === 1 ? [...vals][0] : "?";
+  };
+  const setStyle = (ids: string[], patch: Parameters<MindMap["setNodeStyle"]>[1]) => act(() => map.setNodeStyle(ids, patch));
+  const colorValue = (ids: string[]) => {
+    const vals = new Set(ids.map((id) => map.node(id)?.color ?? null));
+    return vals.size === 1 ? [...vals][0] : "?";
+  };
+  /** 線條設定（ids = 線條，也就是子主題） */
+  const lineItems = (ids: string[]): MenuItem[] => [
+    { kind: "choices", label: "線型", options: LINES, value: styleValue(ids, "line"), onSelect: (v) => setStyle(ids, { line: (v || null) as NodeOverride["line"] | null }) },
+    { kind: "choices", label: "粗細", options: WIDTHS, value: styleValue(ids, "width"), onSelect: (v) => setStyle(ids, { width: v ? Number(v) : null }) },
+    {
+      kind: "choices",
+      label: "虛線",
+      options: [{ label: "實線", value: "" }, { label: "虛線", value: "true" }],
+      value: styleValue(ids, "dash"),
+      onSelect: (v) => setStyle(ids, { dash: v === "true" || null }),
+    },
+  ];
+
+  const menuItems = (): { title: string; items: MenuItem[] } => {
+    if (!menu) return { title: "", items: [] };
+    if (menu.kind === "background") {
+      return {
+        title: "畫布",
+        items: [
+          { kind: "action", label: "新增主題", onSelect: () => addChild(map.rootId) },
+          { kind: "action", label: "全選", hint: "Ctrl+A", onSelect: selectAll },
+          { kind: "separator" },
+          { kind: "action", label: "整張圖置中", hint: "Ctrl+0", onSelect: fit },
+          { kind: "action", label: "實際大小（100%）", onSelect: actualSize },
+          { kind: "action", label: "自動排列", disabled: !map.hasOffsets(), onSelect: () => act(() => map.clearOffsets()) },
+          { kind: "separator" },
+          { kind: "choices", label: "結構", options: STRUCTURES.map((s) => ({ label: s.label, value: s.id })), value: structure, onSelect: (v) => setStructure(v as Structure) },
+          { kind: "choices", label: "樣式", options: THEMES.map((t) => ({ label: t.label.slice(0, 1), value: t.id })), value: theme.id, onSelect: setTheme },
+          { kind: "separator" },
+          { kind: "action", label: "匯出 PNG 圖片", onSelect: () => void exportAs("png") },
+        ],
+      };
+    }
+    const edgeIds = [...sel.edges].filter((id) => layout.byId.has(id));
+    if (menu.kind === "edge") {
+      return {
+        title: edgeIds.length > 1 ? `${edgeIds.length} 條線` : "線條",
+        items: [
+          ...lineItems(edgeIds),
+          { kind: "colors", label: "顏色", options: COLORS, value: colorValue(edgeIds), onSelect: (c) => act(() => edgeIds.forEach((id) => map.setColor(id, c))) },
+          { kind: "separator" },
+          { kind: "action", label: "選取線條兩端的主題", onSelect: () => setSel({ nodes: new Set(edgeIds.flatMap((id) => [id, layout.byId.get(id)!.parent!])), edges: new Set(edgeIds), primary: edgeIds[0] }) },
+        ],
+      };
+    }
+    const ids = [...sel.nodes].filter((id) => layout.byId.has(id));
+    const one = ids.length === 1 ? ids[0] : null;
+    const nonRoot = ids.filter((id) => id !== map.rootId);
+    const items: MenuItem[] = [];
+    if (one) {
+      items.push(
+        { kind: "action", label: "新增子主題", hint: "Tab", onSelect: () => addChild(one) },
+        { kind: "action", label: one === map.rootId ? "新增主題" : "新增同層主題", hint: "Enter", onSelect: () => addSibling(false, one) },
+        { kind: "action", label: "編輯文字", hint: "F2", onSelect: () => startEdit(one) },
+      );
+      if (map.children(one).length) items.push({ kind: "action", label: map.node(one)!.collapsed ? "展開" : "收合", hint: "空白鍵", onSelect: () => toggleCollapse(one) });
+      items.push({ kind: "separator" });
+    }
+    items.push(
+      { kind: "colors", label: "顏色", options: COLORS, value: colorValue(ids), onSelect: (c) => act(() => ids.forEach((id) => map.setColor(id, c))) },
+      { kind: "choices", label: "形狀", options: SHAPES, value: styleValue(ids, "shape"), onSelect: (v) => setStyle(ids, { shape: (v || null) as NodeOverride["shape"] | null }) },
+    );
+    if (nonRoot.length) items.push(...lineItems(nonRoot));
+    items.push({ kind: "separator" });
+    if (ids.some((id) => map.offset(id))) items.push({ kind: "action", label: "回到自動排版的位置", onSelect: () => act(() => ids.forEach((id) => map.setOffset(id, null))) });
+    if (nonRoot.length) items.push({ kind: "action", label: nonRoot.length > 1 ? `刪除 ${nonRoot.length} 個主題` : "刪除", hint: "Delete", danger: true, onSelect: removeSelected });
+    return { title: one ? `主題「${oneLine(map.node(one)!.text)}」` : `${ids.length} 個主題`, items };
+  };
+
   // ── 畫面 ──────────────────────────────────────────
 
-  const sel = selected ? layout.byId.get(selected) : undefined;
-  // 拖曳中的節點與它底下的節點
-  const dragged = useMemo(() => {
-    if (!drag || !layout.byId.has(drag.id)) return undefined;
-    const out = new Set<string>();
-    const walk = (id: string) => {
-      out.add(id);
-      layout.byId.get(id)?.children.forEach(walk);
-    };
-    walk(drag.id);
-    return out;
-  }, [drag?.id, layout]); // eslint-disable-line react-hooks/exhaustive-deps
   const selNode = selected ? map.node(selected) : undefined;
-  const horizontal = structure === "mindmap" || structure === "logic";
-  const inset = theme.port && horizontal ? PORT_INSET : 0;
   const editingPlaced = editing ? layout.byId.get(editing.id) : undefined;
   const editStyle = editing ? data.styles.get(editing.id) : undefined;
+  const menuData = menu ? menuItems() : null;
 
   return (
     <div className="mm-editor">
@@ -573,14 +816,14 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
           <button type="button" className="mm-btn" disabled={!selected || !map.children(selected).length} onClick={() => toggleCollapse()} title="收合／展開（空白鍵）">
             {selNode?.collapsed ? "展開" : "收合"}
           </button>
-          <button type="button" className="mm-btn mm-btn--danger" disabled={!selected || selected === map.rootId} onClick={removeSelected} title="刪除（Delete）">刪除</button>
+          <button type="button" className="mm-btn mm-btn--danger" disabled={![...sel.nodes].some((id) => id !== map.rootId)} onClick={removeSelected} title="刪除（Delete）">刪除</button>
           <label className="mm-field">
             顏色
             <select
               aria-label="分支顏色"
               disabled={!selected}
               value={selNode?.color ?? ""}
-              onChange={(e) => selected && act(() => map.setColor(selected, e.target.value || null))}
+              onChange={(e) => act(() => [...sel.nodes].forEach((id) => map.setColor(id, e.target.value || null)))}
             >
               {COLORS.map((c) => <option key={c.label} value={c.value ?? ""}>{c.label}</option>)}
             </select>
@@ -593,13 +836,7 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
           <span className="mm-zoom">{Math.round(view.s * 100)}%</span>
           <button type="button" className="mm-btn" onClick={() => zoomAt(1.2)} aria-label="放大">+</button>
           <button type="button" className="mm-btn" onClick={fit} title="整張圖置中（Ctrl+0）">置中</button>
-          <button
-            type="button"
-            className="mm-btn"
-            disabled={!map.hasOffsets()}
-            onClick={() => act(() => map.clearOffsets())}
-            title="拖動過的主題回到自動排版的位置"
-          >
+          <button type="button" className="mm-btn" disabled={!map.hasOffsets()} onClick={() => act(() => map.clearOffsets())} title="拖動過的主題回到自動排版的位置">
             自動排列
           </button>
           <label className="mm-field">
@@ -624,7 +861,7 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
 
       <div
         ref={hostRef}
-        className="mm-canvas"
+        className={`mm-canvas${gesture.current?.kind === "pan" && gesture.current.moved ? " mm-canvas--panning" : ""}`}
         tabIndex={0}
         aria-label="心智圖畫布"
         style={{ background: theme.background }}
@@ -632,36 +869,62 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
+        onContextMenu={(e) => e.preventDefault()}
       >
-        <svg ref={svgRef} className="mm-svg" width="100%" height="100%">
+        <svg className="mm-svg" width="100%" height="100%">
           <g transform={`translate(${view.x} ${view.y}) scale(${view.s})`}>
-            <g ref={contentRef}>
-              <MindMapContent data={data} dim={dragged} />
-            </g>
-            {/* 介面層：選取框、拖曳提示（不會匯出） */}
+            {/* 選取的線條：在線下面墊一層亮色 */}
             <g className="mm-ui" pointerEvents="none">
-              {sel && !drag && (
-                <rect x={sel.x - 5} y={sel.y - 5} width={sel.width + 10} height={sel.height + 10} rx={10} fill="none" stroke={theme.accent} strokeWidth={2 / view.s} data-selected={sel.id} />
-              )}
+              {edges.filter((ed) => sel.edges.has(ed.id)).map((ed) => (
+                <path key={ed.id} d={ed.d} fill="none" stroke={theme.accent} strokeOpacity={0.45} strokeWidth={ed.width + 8 / view.s} strokeLinecap="round" data-selected-edge={ed.id} />
+              ))}
+            </g>
+            <g ref={contentRef}>
+              <MindMapContent data={data} layout={shown} lifted={drag?.ids} />
+            </g>
+            {/* 點選線條用的透明粗線（不會匯出） */}
+            <g className="mm-hits">
+              {edges.map((ed) => (
+                <path key={ed.id} d={ed.d} data-edge={ed.id} fill="none" stroke="transparent" strokeWidth={Math.max(12 / view.s, ed.width + 6)} pointerEvents="stroke" style={{ cursor: "pointer" }} />
+              ))}
+            </g>
+            {/* 介面層：選取框、拖曳提示、框選（不會匯出） */}
+            <g className="mm-ui" pointerEvents="none">
+              {[...sel.nodes].map((id) => {
+                const n = shown.byId.get(id);
+                if (!n) return null;
+                return (
+                  <rect
+                    key={id}
+                    x={n.x - 5}
+                    y={n.y - 5}
+                    width={n.width + 10}
+                    height={n.height + 10}
+                    rx={10}
+                    fill="none"
+                    stroke={theme.accent}
+                    strokeWidth={(id === selected ? 2 : 1.5) / view.s}
+                    strokeDasharray={id === selected ? undefined : `${5 / view.s} ${3 / view.s}`}
+                    data-selected={id === selected ? id : undefined}
+                    data-multi={id}
+                  />
+                );
+              })}
               {drag?.target && <DropHint layout={layout} target={drag.target} color={theme.accent} s={view.s} />}
-              {/* 拖曳預覽：整個子樹跟著移動 */}
-              {drag &&
-                [...(dragged ?? [])].map((id) => {
-                  const pl = layout.byId.get(id)!;
-                  return (
-                    <NodeShape
-                      key={id}
-                      placed={{ ...pl, x: pl.x + drag.dx, y: pl.y + drag.dy }}
-                      node={data.nodes.get(id)!}
-                      style={data.styles.get(id)!}
-                      theme={theme}
-                      inset={inset}
-                      portColor={theme.port}
-                      structure={structure}
-                      ghost
-                    />
-                  );
-                })}
+              {box && (
+                <rect
+                  className="mm-box"
+                  x={Math.min(box[0], box[2])}
+                  y={Math.min(box[1], box[3])}
+                  width={Math.abs(box[2] - box[0])}
+                  height={Math.abs(box[3] - box[1])}
+                  fill={theme.accent}
+                  fillOpacity={0.1}
+                  stroke={theme.accent}
+                  strokeWidth={1 / view.s}
+                  strokeDasharray={`${4 / view.s} ${3 / view.s}`}
+                />
+              )}
             </g>
           </g>
         </svg>
@@ -707,20 +970,26 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
           />
         )}
 
+        {menu && menuData && <ContextMenu x={menu.x} y={menu.y} title={menuData.title} items={menuData.items} onClose={() => setMenu(null)} />}
         {toast && <div className="mm-toast" role="status">{toast}</div>}
-        <p className="mm-hint">點兩下編輯 · Tab 子主題 · Enter 同層 · 拖到主題上換位置、拖到空白處自由放置 · 拖曳空白處移動畫面</p>
+        <p className="mm-hint">左鍵拖背景框選 · 右鍵拖曳移動畫面 · 右鍵點一下開選單 · 點兩下編輯 · Tab 子主題 · Enter 同層</p>
       </div>
     </div>
   );
 }
 
+const oneLine = (s: string) => {
+  const t = s.replace(/\s*\n\s*/g, " ").trim();
+  return t.length > 16 ? `${t.slice(0, 16)}…` : t;
+};
+
 /** `id` 是否在 `ancestor` 底下（依排版的父子關係） */
-function isBelow(layout: ReturnType<typeof layoutTree>, ancestor: string, id: string): boolean {
+function isBelow(layout: Layout, ancestor: string, id: string): boolean {
   for (let p = layout.byId.get(id)?.parent ?? null; p; p = layout.byId.get(p)?.parent ?? null) if (p === ancestor) return true;
   return false;
 }
 
-function DropHint({ layout, target, color, s }: { layout: ReturnType<typeof layoutTree>; target: DropTarget; color: string; s: number }) {
+function DropHint({ layout, target, color, s }: { layout: Layout; target: DropTarget; color: string; s: number }) {
   const n = layout.byId.get(target.over);
   if (!n) return null;
   const w = 2.5 / s;

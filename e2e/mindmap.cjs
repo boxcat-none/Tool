@@ -120,13 +120,19 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   const mdFree = await outline(page);
   const g0 = await posOf("目標"), k0 = await posOf("營收"), r0 = await posOf("Risk第二行");
   const [fx, fy] = await center(page, "目標");
+  const goalId = await node(page, "目標").getAttribute("data-node");
+  const edgeD = () => page.locator(`.mm-hits [data-edge="${goalId}"]`).getAttribute("d");
+  const edge0 = await edgeD();
   // 找一個空白的落點（往下 160 px，碰到主題就再往下）
   let dropY = fy + 160;
   while (await page.evaluate(([x, y]) => !!document.elementFromPoint(x, y)?.closest("[data-node]"), [fx + 40, dropY])) dropY += 40;
   await page.mouse.move(fx, fy); await page.mouse.down();
   await page.mouse.move(fx + 10, fy + 10, { steps: 3 });
   await page.mouse.move(fx + 40, dropY, { steps: 10 });
-  check((await page.locator(".mm-ui [data-node]").count()) >= 3 && (await page.locator(".mm-ui rect[fill-opacity]").count()) === 0, "free drag previews the whole subtree, no drop hint");
+  const edgeMid = await edgeD();
+  const childMid = await posOf("營收");
+  check(edgeMid !== edge0 && (await page.locator(".mm-ui rect[fill-opacity]:not(.mm-box)").count()) === 0, "while dragging, the connecting line follows (no drop hint on empty space)", [edge0, edgeMid]);
+  check(childMid.join() !== k0.join() && (await texts(page)).length === new Set(await texts(page)).size, "the whole subtree moves live (no duplicate ghost)");
   await page.mouse.up();
   const g1 = await posOf("目標"), k1 = await posOf("營收"), r1 = await posOf("Risk第二行");
   const d = [g1[0] - g0[0], g1[1] - g0[1]];
@@ -155,6 +161,106 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   await page.getByRole("button", { name: "自動排列" }).click();
   check((await posOf("目標")).join() === g0.join() && (await posOf("營收")).join() === k0.join(), "auto arrange puts topics back", [await posOf("目標"), g0]);
   check(await page.getByRole("button", { name: "自動排列" }).isDisabled(), "auto arrange is disabled when nothing was moved");
+
+  // ── 右鍵拖曳移動整張圖（不開選單）──
+  const cbox = await page.locator(".mm-canvas").boundingBox();
+  const emptyAt = async () => {
+    for (let y = cbox.y + 30; y < cbox.y + cbox.height - 30; y += 25)
+      for (let x = cbox.x + 30; x < cbox.x + cbox.width - 30; x += 25)
+        if (await page.evaluate(([x, y]) => { const el = document.elementFromPoint(x, y); return !!el?.closest(".mm-canvas") && !el.closest("[data-node],[data-edge],[data-toggle],.mm-menu,.mm-hint"); }, [x, y])) return [x, y];
+    throw new Error("找不到空白處");
+  };
+  const tf = () => page.evaluate(() => document.querySelector(".mm-svg > g").getAttribute("transform"));
+  let [ex, ey] = await emptyAt();
+  const tf0 = await tf();
+  await page.mouse.move(ex, ey); await page.mouse.down({ button: "right" });
+  await page.mouse.move(ex + 60, ey + 40, { steps: 6 });
+  await page.mouse.up({ button: "right" });
+  check((await tf()) !== tf0 && (await page.locator(".mm-menu").count()) === 0, "right-drag pans the whole map without a menu", [tf0, await tf()]);
+  const mdPan = await outline(page);
+
+  // ── 右鍵點背景：畫布選單 ──
+  [ex, ey] = await emptyAt();
+  await page.mouse.click(ex, ey, { button: "right" });
+  check(await page.locator(".mm-menu__title").textContent() === "畫布", "right-click background opens the canvas menu");
+  const canvasItems = await page.getByRole("menuitem").allTextContents();
+  check(["新增主題", "全選", "整張圖置中", "實際大小", "自動排列", "匯出 PNG"].every((t) => canvasItems.some((c) => c.includes(t))), "canvas menu has its own options", canvasItems);
+  await page.getByRole("menuitem", { name: /實際大小/ }).click();
+  check((await scale(page)) === 1 && (await page.locator(".mm-menu").count()) === 0, "canvas menu: actual size (100%)");
+  [ex, ey] = await emptyAt();
+  await page.mouse.click(ex, ey, { button: "right" });
+  await page.getByRole("menuitem", { name: /全選/ }).click();
+  const allCount = (await texts(page)).length;
+  check((await page.locator("[data-multi]").count()) === allCount && (await page.locator("[data-selected-edge]").count()) === allCount - 1, "select all selects every topic and line", [await page.locator("[data-multi]").count(), allCount]);
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "置中" }).click();
+
+  // ── 右鍵點主題：主題選單（形狀、線型、虛線）──
+  const [tx3, ty3] = await center(page, "營收");
+  await page.mouse.click(tx3, ty3, { button: "right" });
+  check((await page.locator(".mm-menu__title").textContent()).includes("營收"), "right-click a topic opens the topic menu");
+  check(await page.getByRole("menuitem", { name: /新增子主題/ }).count() === 1 && await page.getByRole("menuitem", { name: /刪除/ }).count() === 1, "topic menu has add / delete");
+  await page.getByRole("group", { name: "形狀" }).getByRole("menuitemradio", { name: "橢圓" }).click();
+  await page.getByRole("group", { name: "虛線" }).getByRole("menuitemradio", { name: "虛線" }).click();
+  check(await page.locator(".mm-menu").count() === 1, "menu stays open while adjusting options");
+  check(await node(page, "營收").locator("ellipse").count() === 1, "shape changed to ellipse");
+  const revId = await node(page, "營收").getAttribute("data-node");
+  check(await page.locator(".mm-edges path[stroke-dasharray]").count() === 1, "its line became dashed");
+  await page.keyboard.press("Escape");
+  check(await page.locator(".mm-menu").count() === 0, "Esc closes the menu");
+
+  // ── 點線條選取、右鍵點線條：線條選單 ──
+  const edgePoint = async (id) => page.evaluate((id) => {
+    const p = document.querySelector(`.mm-hits [data-edge="${id}"]`);
+    const pt = p.getPointAtLength(p.getTotalLength() / 2);
+    const m = p.getScreenCTM();
+    return [pt.x * m.a + pt.y * m.c + m.e, pt.x * m.b + pt.y * m.d + m.f];
+  }, id);
+  const [lx, ly] = await edgePoint(revId);
+  await page.mouse.click(lx, ly);
+  check((await page.locator("[data-selected-edge]").count()) === 1 && (await page.locator("[data-multi]").count()) === 0, "clicking a line selects the line");
+  await page.mouse.click(lx, ly, { button: "right" });
+  check(await page.locator(".mm-menu__title").textContent() === "線條", "right-click a line opens the line menu");
+  await page.getByRole("group", { name: "線型" }).getByRole("menuitemradio", { name: "直線" }).click();
+  await page.getByRole("group", { name: "粗細" }).getByRole("menuitemradio", { name: "粗" }).click();
+  const ld = await page.locator(`.mm-hits [data-edge="${revId}"]`).getAttribute("d");
+  check(/^M[-\d.]+ [-\d.]+L[-\d.]+ [-\d.]+$/.test(ld), "line style changed to straight", ld);
+  check(await page.locator('.mm-edges path[stroke-width="5"]').count() === 1, "line width changed to thick");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Control+z");
+  await page.keyboard.press("Control+z");
+  check(!/^M[-\d.]+ [-\d.]+L[-\d.]+ [-\d.]+$/.test(await page.locator(`.mm-hits [data-edge="${revId}"]`).getAttribute("d")), "undo restores the line style");
+
+  // ── 左鍵拖背景：框選主題與線條 ──
+  const kb = await node(page, "營收").boundingBox();
+  const tb = await node(page, "時間表").boundingBox();
+  const x0 = Math.min(kb.x, tb.x) - 10, y0 = Math.min(kb.y, tb.y) - 10;
+  const x1 = Math.max(kb.x + kb.width, tb.x + tb.width) + 10, y1 = Math.max(kb.y + kb.height, tb.y + tb.height) + 10;
+  await page.keyboard.press("Escape");
+  await page.mouse.move(x0, y0); await page.mouse.down();
+  await page.mouse.move((x0 + x1) / 2, (y0 + y1) / 2, { steps: 4 });
+  check(await page.locator(".mm-box").count() === 1, "left-drag on background draws a selection box");
+  await page.mouse.move(x1, y1, { steps: 4 });
+  await page.mouse.up();
+  const boxed = await page.locator("[data-multi]").count();
+  check(boxed === 2 && (await page.locator(".mm-box").count()) === 0, "selection box selects the topics inside", boxed);
+  check((await page.locator("[data-selected-edge]").count()) >= 1, "…and the lines crossing it", await page.locator("[data-selected-edge]").count());
+  // 多選一起拖
+  const a0 = await posOf("營收"), b0 = await posOf("時間表");
+  const [mx3, my3] = await center(page, "營收");
+  await page.mouse.move(mx3, my3); await page.mouse.down();
+  await page.mouse.move(mx3 + 10, my3 + 10, { steps: 3 });
+  await page.mouse.move(mx3 + 60, my3 + 120, { steps: 8 });
+  await page.mouse.up();
+  const a1 = await posOf("營收"), b1 = await posOf("時間表");
+  check(a1[0] - a0[0] === b1[0] - b0[0] && a1[1] - a0[1] === b1[1] - b0[1] && a1[0] !== a0[0], "multiple selected topics move together", [a0, a1, b0, b1]);
+  check((await outline(page)) === mdPan, "moving a selection never changes the tree");
+  // 右鍵點多選中的主題：一次改全部
+  await page.mouse.click(...(await center(page, "營收")), { button: "right" });
+  check(await page.locator(".mm-menu__title").textContent() === "2 個主題", "right-click inside a multi-selection keeps it", await page.locator(".mm-menu__title").textContent());
+  await page.getByRole("menuitem", { name: "回到自動排版的位置" }).click();
+  check((await posOf("營收")).join() === a0.join() && (await posOf("時間表")).join() === b0.join(), "menu: back to auto layout position (both)");
+  await page.keyboard.press("Escape");
 
   // ── 收合、展開 ──
   await node(page, "目標").click();
@@ -279,6 +385,14 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   for (let i = 1; i <= 12; i++) await touch("touchMove", [[ax + ((bx - ax) * i) / 12, ay + ((by - ay) * i) / 12]]);
   await touch("touchEnd", []);
   check((await outline(tp)).includes("- 甲\n  - 丙\n"), "finger drag moves a topic under another", await outline(tp));
+  // 長按 = 操作選單（沒有右鍵）
+  await touch("touchStart", [await center(tp, "乙")]);
+  await tp.waitForTimeout(800);
+  await touch("touchEnd", []);
+  check((await tp.locator(".mm-menu__title").textContent()).includes("乙"), "long press opens the topic menu");
+  await tp.getByRole("menuitem", { name: /編輯文字/ }).click();
+  check(await tp.locator("textarea.mm-edit").count() === 1, "menu item works with touch (edit)");
+  await tp.keyboard.press("Escape");
   const before = await scale(tp);
   const cb = await tp.locator(".mm-canvas").boundingBox();
   const mx = cb.x + cb.width / 2, my = cb.y + cb.height / 2;

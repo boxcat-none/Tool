@@ -58,3 +58,37 @@
   .mm-group { flex-wrap: nowrap; }
   .mm-title { flex: 0 0 120px; }
 }
+
+/* 右鍵選單 */
+.mm-canvas--panning { cursor: grabbing; }
+.mm-menu {
+  position: absolute; z-index: 4; min-width: 220px; max-width: min(340px, calc(100% - 8px)); max-height: calc(100% - 8px); overflow-y: auto;
+  padding: 6px; border-radius: 10px; background: var(--surface); color: var(--text); border: 1px solid var(--border);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 0.28); font-size: 13px; user-select: none; -webkit-user-select: none;
+}
+.mm-menu__title { padding: 4px 8px 6px; font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mm-menu__sep { height: 1px; margin: 4px 2px; background: var(--border); }
+.mm-menu__item {
+  display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 7px 8px; border: 0; border-radius: 6px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.mm-menu__item:hover:not(:disabled), .mm-menu__item:focus-visible { background: var(--surface-2); outline: none; }
+.mm-menu__item:disabled { opacity: 0.45; cursor: default; }
+.mm-menu__item--danger { color: var(--danger); }
+.mm-menu__item kbd { font: inherit; font-size: 11px; color: var(--text-2); }
+.mm-menu__row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; }
+.mm-menu__label { flex: 0 0 34px; color: var(--text-2); font-size: 12px; }
+.mm-menu__choices { display: flex; flex-wrap: wrap; gap: 4px; }
+.mm-menu__choice {
+  padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: inherit; font: inherit; font-size: 12px; cursor: pointer;
+}
+.mm-menu__choice:hover { border-color: var(--text-2); }
+.mm-menu__choice--on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.mm-menu__swatch { width: 20px; height: 20px; padding: 0; border-radius: 50%; border: 2px solid var(--surface); box-shadow: 0 0 0 1px var(--border); cursor: pointer; }
+.mm-menu__swatch--none { background: linear-gradient(135deg, var(--surface) 45%, var(--danger) 45%, var(--danger) 55%, var(--surface) 55%); }
+.mm-menu__swatch--on { box-shadow: 0 0 0 2px var(--accent); }
+@media (pointer: coarse) {
+  .mm-menu__item { padding: 10px 10px; }
+  .mm-menu__choice { padding: 6px 10px; }
+  .mm-menu__swatch { width: 28px; height: 28px; }
+}
