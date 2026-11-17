@@ -39,8 +39,13 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   // ── 新增 ──
   await page.getByRole("button", { name: "新增心智圖" }).click();
   await page.locator(".mm-canvas").waitFor();
-  check((await texts(page)).join() === "中心主題", "new map has a central topic", await texts(page));
-  check((await selectedText(page)) === "中心主題", "central topic is selected");
+  check((await texts(page)).join() === "主題", "new map has a central topic", await texts(page));
+  check((await selectedText(page)) === "主題", "central topic is selected");
+  // 一開始是圓角方塊、文字「主題」；介面上方塊叫「元件」
+  const rootShape = await node(page, "主題").evaluate((g) => { const r = g.querySelector("rect"); return r && { rx: r.getAttribute("rx"), fill: r.getAttribute("fill") }; });
+  check(rootShape?.rx === "8", "new map starts with a rounded block", rootShape);
+  const ui = await page.locator(".mm-toolbar").innerText();
+  check(ui.includes("＋子元件") && !/子主題|同層主題/.test(ui), "blocks are called 元件 in the toolbar");
   check(await page.getByLabel("樣式").inputValue() === "node", "default style is node cards (E)");
 
   // ── 鍵盤：Tab 子主題、Enter 同層、編輯中 Tab 連續新增 ──
@@ -53,8 +58,8 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   check((await selectedText(page)) === "目標", "arrow left moves to parent (logic side)", await selectedText(page));
   await page.keyboard.press("Enter"); await typeTopic(page, "時程"); await page.keyboard.press("Enter");
   await page.keyboard.press("Enter"); await typeTopic(page, "風險"); await page.keyboard.press("Enter");
-  check(JSON.stringify((await texts(page)).sort()) === JSON.stringify(["中心主題", "目標", "營收", "使用者", "時程", "風險"].sort()), "topics added with Tab / Enter", await texts(page));
-  check((await outline(page)) === "# 中心主題\n- 目標\n  - 營收\n  - 使用者\n- 時程\n- 風險\n", "tree structure is right (markdown export)");
+  check(JSON.stringify((await texts(page)).sort()) === JSON.stringify(["主題", "目標", "營收", "使用者", "時程", "風險"].sort()), "topics added with Tab / Enter", await texts(page));
+  check((await outline(page)) === "# 主題\n- 目標\n  - 營收\n  - 使用者\n- 時程\n- 風險\n", "tree structure is right (markdown export)");
 
   // 直接打字取代、Shift+Enter 換行、Esc 取消
   await node(page, "風險").click();
@@ -111,10 +116,10 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   check((await outline(page)) === md, "redo applies it again");
 
   // ── 自由拖動：拖到空白處就停在那裡，子主題一起移動；自動排列回到原位 ──
-  // 相對中心主題的位置（選取的主題跑出畫面時畫面會自動捲動，所以不比螢幕座標）
+  // 相對主題的位置（選取的主題跑出畫面時畫面會自動捲動，所以不比螢幕座標）
   const posOf = async (t) => {
     const b = await node(page, t).boundingBox();
-    const r = await node(page, "中心主題").boundingBox();
+    const r = await node(page, "主題").boundingBox();
     return [Math.round(b.x - r.x), Math.round(b.y - r.y)];
   };
   const mdFree = await outline(page);
@@ -149,7 +154,7 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   check((await outline(page)) === mdFree, "free drag does not change the tree");
   // 按住 Shift 拖到別的主題上：也是自由放置，不換父節點
   const [sx2, sy2] = await center(page, "時間表");
-  const [ox2, oy2] = await center(page, "中心主題");
+  const [ox2, oy2] = await center(page, "主題");
   await page.keyboard.down("Shift");
   await page.mouse.move(sx2, sy2); await page.mouse.down();
   await page.mouse.move(sx2 + 10, sy2, { steps: 3 });
@@ -184,7 +189,7 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   await page.mouse.click(ex, ey, { button: "right" });
   check(await page.locator(".mm-menu__title").textContent() === "畫布", "right-click background opens the canvas menu");
   const canvasItems = await page.getByRole("menuitem").allTextContents();
-  check(["新增主題", "全選", "整張圖置中", "實際大小", "自動排列", "匯出 PNG"].every((t) => canvasItems.some((c) => c.includes(t))), "canvas menu has its own options", canvasItems);
+  check(["新增元件", "全選", "整張圖置中", "實際大小", "自動排列", "匯出 PNG"].every((t) => canvasItems.some((c) => c.includes(t))), "canvas menu has its own options", canvasItems);
   await page.getByRole("menuitem", { name: /實際大小/ }).click();
   check((await scale(page)) === 1 && (await page.locator(".mm-menu").count()) === 0, "canvas menu: actual size (100%)");
   [ex, ey] = await emptyAt();
@@ -199,7 +204,7 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   const [tx3, ty3] = await center(page, "營收");
   await page.mouse.click(tx3, ty3, { button: "right" });
   check((await page.locator(".mm-menu__title").textContent()).includes("營收"), "right-click a topic opens the topic menu");
-  check(await page.getByRole("menuitem", { name: /新增子主題/ }).count() === 1 && await page.getByRole("menuitem", { name: /刪除/ }).count() === 1, "topic menu has add / delete");
+  check(await page.getByRole("menuitem", { name: /新增子元件/ }).count() === 1 && await page.getByRole("menuitem", { name: /刪除/ }).count() === 1, "topic menu has add / delete");
   await page.getByRole("group", { name: "形狀" }).getByRole("menuitemradio", { name: "橢圓" }).click();
   await page.getByRole("group", { name: "虛線" }).getByRole("menuitemradio", { name: "虛線" }).click();
   check(await page.locator(".mm-menu").count() === 1, "menu stays open while adjusting options");
@@ -257,7 +262,7 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   check((await outline(page)) === mdPan, "moving a selection never changes the tree");
   // 右鍵點多選中的主題：一次改全部
   await page.mouse.click(...(await center(page, "營收")), { button: "right" });
-  check(await page.locator(".mm-menu__title").textContent() === "2 個主題", "right-click inside a multi-selection keeps it", await page.locator(".mm-menu__title").textContent());
+  check(await page.locator(".mm-menu__title").textContent() === "2 個元件", "right-click inside a multi-selection keeps it", await page.locator(".mm-menu__title").textContent());
   await page.getByRole("menuitem", { name: "回到自動排版的位置" }).click();
   check((await posOf("營收")).join() === a0.join() && (await posOf("時間表")).join() === b0.join(), "menu: back to auto layout position (both)");
   await page.keyboard.press("Escape");
@@ -276,7 +281,7 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   check((await selectedText(page)) === "營收", "selection moves to a sibling after delete", await selectedText(page));
 
   // ── 貼上大綱：依縮排建立 ──
-  await node(page, "中心主題").click();
+  await node(page, "主題").click();
   await page.evaluate(() => {
     const dt = new DataTransfer();
     dt.setData("text/plain", "- 資源\n  - 人力\n  - 預算\n- 備註");
@@ -327,7 +332,7 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   check(png.name.endsWith(".png") && png.data.subarray(1, 4).toString() === "PNG" && png.data.length > 5000, "export PNG", [png.name, png.data.length]);
   const svg = await download(page, "SVG 圖片");
   const svgText = svg.data.toString("utf8");
-  check(svgText.startsWith("<svg") && svgText.includes("中心主題") && !svgText.includes("data-selected"), "export SVG (without the selection box)");
+  check(svgText.startsWith("<svg") && svgText.includes("主題") && !svgText.includes("data-selected"), "export SVG (without the selection box)");
   const file = await download(page, "心智圖檔（.gugamap）");
   check(file.name.endsWith(".gugamap") && JSON.parse(file.data.toString("utf8")).format === "gugamap", "export .gugamap", file.name);
   const mdBefore = await outline(page);
@@ -338,7 +343,7 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   await page.reload();
   await page.getByRole("button", { name: /^專案規劃/ }).waitFor();
   const meta = await page.locator(".mm-list__meta").first().textContent();
-  check(meta.startsWith(`${count} 個主題`), "list shows the saved map with topic count", meta);
+  check(meta.startsWith(`${count} 個元件`), "list shows the saved map with topic count", meta);
   await page.getByRole("button", { name: /^專案規劃/ }).click();
   await page.locator(".mm-canvas").waitFor();
   check((await outline(page)) === mdBefore, "content is the same after reload");
@@ -369,7 +374,7 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   await tp.goto(env.BASE + "/#mindmap");
   await tp.getByRole("button", { name: "新增心智圖" }).click();
   await tp.locator(".mm-canvas").waitFor();
-  await tp.getByRole("button", { name: "＋子主題" }).click(); await typeTopic(tp, "甲"); await tp.keyboard.press("Enter");
+  await tp.getByRole("button", { name: "＋子元件" }).click(); await typeTopic(tp, "甲"); await tp.keyboard.press("Enter");
   await tp.getByRole("button", { name: "＋同層" }).click(); await typeTopic(tp, "乙"); await tp.keyboard.press("Enter");
   await tp.getByRole("button", { name: "＋同層" }).click(); await typeTopic(tp, "丙"); await tp.keyboard.press("Enter");
   await tp.getByRole("button", { name: "置中" }).click();

@@ -31,7 +31,9 @@ export default function MindMapHome() {
 
   const create = async () => {
     if (!store) return;
-    const map = MindMap.create(`心智圖 ${new Date().toLocaleDateString("zh-TW")}`, "中心主題");
+    // 一開始是一個圓角方塊，文字「主題」（使用者指定）
+    const map = MindMap.create(`心智圖 ${new Date().toLocaleDateString("zh-TW")}`, "主題");
+    map.setNodeStyle([map.rootId], { shape: "rounded" });
     const o = await store.add(map);
     setOpened({ ...o, createdAt: Date.now() });
   };
@@ -107,7 +109,7 @@ export default function MindMapHome() {
             <li key={m.id} className="mm-list__item">
               <button type="button" className="mm-list__open" onClick={() => void open(m)}>
                 <span className="mm-list__title">{m.title || "未命名"}</span>
-                <span className="mm-list__meta">{m.nodeCount} 個主題 · {new Date(m.updatedAt).toLocaleString("zh-TW")}</span>
+                <span className="mm-list__meta">{m.nodeCount} 個元件 · {new Date(m.updatedAt).toLocaleString("zh-TW")}</span>
               </button>
               <button type="button" className="mm-list__delete" onClick={() => void remove(m)} aria-label={`刪除「${m.title}」`}>刪除</button>
             </li>

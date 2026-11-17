@@ -270,7 +270,7 @@ export function NodeShape({
     const [cx, cy] = s === "org" ? [w / 2, h + r + 4] : s === "tree" ? [-r - 4, h / 2] : p.side === -1 ? [-r - 4, h / 2] : [w + r + 4, h / 2];
     const label = p.hidden > 99 ? "99+" : `+${p.hidden}`;
     return (
-      <g data-toggle={p.id} style={{ cursor: "pointer" }} aria-label={`展開 ${p.hidden} 個節點`}>
+      <g data-toggle={p.id} style={{ cursor: "pointer" }} aria-label={`展開 ${p.hidden} 個元件`}>
         <circle cx={cx} cy={cy} r={r + (label.length > 3 ? 3 : 0)} fill={t.background} stroke={t.accent} strokeWidth={1.5} />
         <text x={cx} y={cy} fontSize={10} fontWeight={700} fontFamily={FONT} fill={t.port ?? t.lineColor} textAnchor="middle" dominantBaseline="central">
           {label}

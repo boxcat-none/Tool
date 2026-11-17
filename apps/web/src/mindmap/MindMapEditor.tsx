@@ -33,14 +33,14 @@ import { metaOf, type MindMapStore } from "./store";
  *   左鍵按住背景拖曳 = 拉出選取框，框選主題與線條（Shift 加選）
  *   右鍵按住背景（或任何地方）拖曳 = 移動整張圖；右鍵點一下 = 操作選單（主題、線條、背景各有不同選項）
  *   拖曳主題：放到別的主題中間 = 變成它的子主題，靠上／靠下 = 插在前後；放在空白處（或按住 Shift／Alt）= 自由放置。
- *     選了多個主題時一起自由移動。拖曳時連接線即時跟著動
+ *     選了多個元件時一起自由移動。拖曳時連接線即時跟著動
  * 觸控：一指拖背景 = 移動畫面、兩指縮放；觸控筆拖背景 = 框選；長按 = 操作選單
- * 鍵盤：Tab 子主題、Enter 同層、Delete、方向鍵、Alt+↑↓、空白鍵收合、Ctrl+A 全選、Ctrl+Z／Y
- * 貼上多行文字：依縮排建立多個主題
+ * 鍵盤：Tab 子元件、Enter 同層、Delete、方向鍵、Alt+↑↓、空白鍵收合、Ctrl+A 全選、Ctrl+Z／Y
+ * 貼上多行文字：依縮排建立多個元件
  */
 
 const LOCAL = "this-device";
-const NEW_TEXT = "新主題";
+const NEW_TEXT = "新元件";
 const LONG_PRESS = 550;
 const COLORS: { label: string; value: string | null }[] = [
   { label: "預設", value: null },
@@ -728,7 +728,7 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
       return {
         title: "畫布",
         items: [
-          { kind: "action", label: "新增主題", onSelect: () => addChild(map.rootId) },
+          { kind: "action", label: "新增元件", onSelect: () => addChild(map.rootId) },
           { kind: "action", label: "全選", hint: "Ctrl+A", onSelect: selectAll },
           { kind: "separator" },
           { kind: "action", label: "整張圖置中", hint: "Ctrl+0", onSelect: fit },
@@ -750,7 +750,7 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
           ...lineItems(edgeIds),
           { kind: "colors", label: "顏色", options: COLORS, value: colorValue(edgeIds), onSelect: (c) => act(() => edgeIds.forEach((id) => map.setColor(id, c))) },
           { kind: "separator" },
-          { kind: "action", label: "選取線條兩端的主題", onSelect: () => setSel({ nodes: new Set(edgeIds.flatMap((id) => [id, layout.byId.get(id)!.parent!])), edges: new Set(edgeIds), primary: edgeIds[0] }) },
+          { kind: "action", label: "選取線條兩端的元件", onSelect: () => setSel({ nodes: new Set(edgeIds.flatMap((id) => [id, layout.byId.get(id)!.parent!])), edges: new Set(edgeIds), primary: edgeIds[0] }) },
         ],
       };
     }
@@ -760,8 +760,8 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
     const items: MenuItem[] = [];
     if (one) {
       items.push(
-        { kind: "action", label: "新增子主題", hint: "Tab", onSelect: () => addChild(one) },
-        { kind: "action", label: one === map.rootId ? "新增主題" : "新增同層主題", hint: "Enter", onSelect: () => addSibling(false, one) },
+        { kind: "action", label: "新增子元件", hint: "Tab", onSelect: () => addChild(one) },
+        { kind: "action", label: one === map.rootId ? "新增元件" : "新增同層元件", hint: "Enter", onSelect: () => addSibling(false, one) },
         { kind: "action", label: "編輯文字", hint: "F2", onSelect: () => startEdit(one) },
       );
       if (map.children(one).length) items.push({ kind: "action", label: map.node(one)!.collapsed ? "展開" : "收合", hint: "空白鍵", onSelect: () => toggleCollapse(one) });
@@ -774,8 +774,8 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
     if (nonRoot.length) items.push(...lineItems(nonRoot));
     items.push({ kind: "separator" });
     if (ids.some((id) => map.offset(id))) items.push({ kind: "action", label: "回到自動排版的位置", onSelect: () => act(() => ids.forEach((id) => map.setOffset(id, null))) });
-    if (nonRoot.length) items.push({ kind: "action", label: nonRoot.length > 1 ? `刪除 ${nonRoot.length} 個主題` : "刪除", hint: "Delete", danger: true, onSelect: removeSelected });
-    return { title: one ? `主題「${oneLine(map.node(one)!.text)}」` : `${ids.length} 個主題`, items };
+    if (nonRoot.length) items.push({ kind: "action", label: nonRoot.length > 1 ? `刪除 ${nonRoot.length} 個元件` : "刪除", hint: "Delete", danger: true, onSelect: removeSelected });
+    return { title: one ? `元件「${oneLine(map.node(one)!.text)}」` : `${ids.length} 個元件`, items };
   };
 
   // ── 畫面 ──────────────────────────────────────────
@@ -810,8 +810,8 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
           </label>
         </span>
         <span className="mm-group">
-          <button type="button" className="mm-btn" disabled={!selected} onClick={() => addChild()} title="新增子主題（Tab）">＋子主題</button>
-          <button type="button" className="mm-btn" disabled={!selected} onClick={() => addSibling()} title="新增同層主題（Enter）">＋同層</button>
+          <button type="button" className="mm-btn" disabled={!selected} onClick={() => addChild()} title="新增子元件（Tab）">＋子元件</button>
+          <button type="button" className="mm-btn" disabled={!selected} onClick={() => addSibling()} title="新增同層元件（Enter）">＋同層</button>
           <button type="button" className="mm-btn" disabled={!selected} onClick={() => selected && startEdit(selected)} title="編輯文字（F2、點兩下）">編輯</button>
           <button type="button" className="mm-btn" disabled={!selected || !map.children(selected).length} onClick={() => toggleCollapse()} title="收合／展開（空白鍵）">
             {selNode?.collapsed ? "展開" : "收合"}
@@ -836,7 +836,7 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
           <span className="mm-zoom">{Math.round(view.s * 100)}%</span>
           <button type="button" className="mm-btn" onClick={() => zoomAt(1.2)} aria-label="放大">+</button>
           <button type="button" className="mm-btn" onClick={fit} title="整張圖置中（Ctrl+0）">置中</button>
-          <button type="button" className="mm-btn" disabled={!map.hasOffsets()} onClick={() => act(() => map.clearOffsets())} title="拖動過的主題回到自動排版的位置">
+          <button type="button" className="mm-btn" disabled={!map.hasOffsets()} onClick={() => act(() => map.clearOffsets())} title="拖動過的元件回到自動排版的位置">
             自動排列
           </button>
           <label className="mm-field">
@@ -932,7 +932,7 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
         {editing && editingPlaced && editStyle && (
           <textarea
             className="mm-edit"
-            aria-label="主題文字"
+            aria-label="元件文字"
             autoFocus
             value={editing.text}
             rows={Math.max(1, editing.text.split("\n").length)}
@@ -972,7 +972,7 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
 
         {menu && menuData && <ContextMenu x={menu.x} y={menu.y} title={menuData.title} items={menuData.items} onClose={() => setMenu(null)} />}
         {toast && <div className="mm-toast" role="status">{toast}</div>}
-        <p className="mm-hint">左鍵拖背景框選 · 右鍵拖曳移動畫面 · 右鍵點一下開選單 · 點兩下編輯 · Tab 子主題 · Enter 同層</p>
+        <p className="mm-hint">左鍵拖背景框選 · 右鍵拖曳移動畫面 · 右鍵點一下開選單 · 點兩下編輯 · Tab 子元件 · Enter 同層</p>
       </div>
     </div>
   );
