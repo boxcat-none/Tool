@@ -80,6 +80,35 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   await page.keyboard.press("Enter");
   check((await texts(page)).includes("時間表"), "double click edits the topic");
 
+  // 編輯框在元件裡面；打長文字時元件即時變大、自動換行
+  await node(page, "時間表").dblclick();
+  const inside = async () => {
+    const ta = await page.locator("textarea.mm-edit").boundingBox();
+    const id = await page.evaluate(() => document.querySelector("[data-selected]").getAttribute("data-selected"));
+    const nb = await page.locator(`.mm-nodes [data-node="${id}"] rect, .mm-nodes [data-node="${id}"] ellipse`).first().boundingBox();
+    return { ok: ta.x >= nb.x - 1 && ta.y >= nb.y - 1 && ta.x + ta.width <= nb.x + nb.width + 1 && ta.y + ta.height <= nb.y + nb.height + 1, ta, nb };
+  };
+  let ins = await inside();
+  check(ins.ok, "the edit box is inside the element", ins);
+  const w0 = ins.nb.width;
+  await page.keyboard.press("End");
+  await page.keyboard.type("（第二季）");
+  ins = await inside();
+  check(ins.ok && ins.nb.width > w0, "the element grows while typing", [w0, ins.nb.width]);
+  const h0 = ins.nb.height;
+  await page.keyboard.type("：這是一段很長很長的說明文字，用來確認超過寬度時會自動換行 and wrap English words");
+  ins = await inside();
+  check(ins.ok && ins.nb.height > h0 * 1.8, "long text wraps: the element grows taller instead of wider", [h0, ins.nb.height, ins.nb.width]);
+  const editW = ins.nb.width;
+  const longId = await page.evaluate(() => document.querySelector("[data-selected]").getAttribute("data-selected"));
+  await page.keyboard.press("Enter");
+  const longNode = page.locator(`.mm-nodes [data-node="${longId}"]`);
+  const tspans = await longNode.locator("tspan").count();
+  const after = await longNode.locator("rect").first().boundingBox();
+  check(tspans >= 3 && Math.abs(after.width - editW) < 1, "after editing the text is drawn on several lines, same size", [tspans, after.width, editW]);
+  await page.keyboard.press("Control+z");
+  check((await texts(page)).includes("時間表"), "undo restores the short text");
+
   // ── 拖曳：放到別的節點中間 = 變成子主題 ──
   const [sx, sy] = await center(page, "時間表");
   const [tx, ty] = await center(page, "目標");

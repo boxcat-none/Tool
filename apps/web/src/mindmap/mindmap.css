@@ -41,10 +41,13 @@
 .mm-canvas { position: relative; flex: 1; min-height: 0; overflow: hidden; touch-action: none; outline: none; user-select: none; -webkit-user-select: none; }
 .mm-svg { display: block; position: absolute; inset: 0; }
 .mm-edit {
-  position: absolute; z-index: 2; box-sizing: border-box; resize: none; overflow: hidden;
-  padding: 4px 8px; border: 2px solid #228be6; border-radius: 8px; background: #fff; color: #212529;
-  line-height: 1.35; text-align: center; outline: none; box-shadow: 0 4px 16px rgb(0 0 0 / 0.25); user-select: text; -webkit-user-select: text;
+  /* 直接在元件裡打字：透明、沒有框，位置與字型和元件裡的文字一樣（見 MindMapEditor 的 editBox） */
+  position: absolute; z-index: 2; box-sizing: content-box; resize: none; overflow: hidden;
+  margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; outline: none;
+  text-align: center; white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal;
+  user-select: text; -webkit-user-select: text;
 }
+.mm-edit::selection { background: rgb(34 139 230 / 0.45); }
 .mm-toast {
   position: absolute; left: 50%; bottom: 40px; transform: translateX(-50%); z-index: 3;
   padding: 8px 14px; border-radius: 8px; background: #212529; color: #fff; font-size: 14px; max-width: calc(100% - 32px);

@@ -19,17 +19,60 @@ import {
  */
 
 export const FONT = `system-ui, -apple-system, "Segoe UI", "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif`;
-const LINE_HEIGHT = 1.35;
+export const LINE_HEIGHT = 1.35;
+/** 一行文字最寬多少（以 14px 字為準，字越大越寬）；超過就自動換行，元件改成往下長高 */
+const MAX_LINE = 220;
 
 let measureCtx: CanvasRenderingContext2D | null = null;
 
-/** 節點大小：依文字（可多行）與樣式的內距 */
-export function measureNode(text: string, style: NodeStyle, depth: number): { width: number; height: number } {
+function ctxFor(style: NodeStyle) {
   measureCtx ??= document.createElement("canvas").getContext("2d")!;
   measureCtx.font = `${style.fontWeight} ${style.fontSize}px ${FONT}`;
-  const lines = (text || " ").split("\n");
-  const w = Math.max(...lines.map((l) => measureCtx!.measureText(l || " ").width));
-  let width = Math.max(depth === 0 ? 80 : 36, Math.ceil(w) + style.padX * 2);
+  return measureCtx;
+}
+
+export const maxLineWidth = (style: NodeStyle) => Math.round((MAX_LINE * style.fontSize) / 14);
+
+/** 中日韓文字（每個字都可以斷行） */
+const CJK = "⺀-鿿豈-﫿＀-￯　-〿";
+const TOKEN = new RegExp(`[${CJK}]|[^\\s${CJK}]+\\s*|\\s+`, "g");
+
+/**
+ * 自動換行：中日韓文字每個字都可以斷，英文以單字為單位（單字本身太長才拆開）。
+ * 量測與繪製都用這個，元件大小和畫出來的行數才會一致。
+ */
+export function wrapLines(text: string, style: NodeStyle): { lines: string[]; width: number } {
+  const ctx = ctxFor(style);
+  const max = maxLineWidth(style);
+  const w = (t: string) => ctx.measureText(t).width;
+  const lines: string[] = [];
+  for (const para of (text || " ").split("\n")) {
+    const tokens = para.match(TOKEN) ?? [""];
+    let line = "";
+    for (const tok of tokens) {
+      if (!line || w(line + tok.trimEnd()) <= max) {
+        line += tok;
+      } else {
+        lines.push(line.trimEnd());
+        line = tok.trimStart();
+      }
+      // 單一個字太長（例如很長的網址）：一個字元一個字元拆
+      while (line.length > 1 && w(line.trimEnd()) > max) {
+        let i = line.length - 1;
+        while (i > 1 && w(line.slice(0, i)) > max) i--;
+        lines.push(line.slice(0, i));
+        line = line.slice(i);
+      }
+    }
+    lines.push(line.trimEnd());
+  }
+  return { lines, width: Math.ceil(Math.max(...lines.map((l) => w(l || " ")))) };
+}
+
+/** 節點大小：依文字（自動換行）與樣式的內距 */
+export function measureNode(text: string, style: NodeStyle, depth: number): { width: number; height: number } {
+  const { lines, width: w } = wrapLines(text, style);
+  let width = Math.max(depth === 0 ? 80 : 36, w + style.padX * 2);
   let height = Math.ceil(lines.length * style.fontSize * LINE_HEIGHT) + style.padY * 2;
   if (style.shape === "ellipse") {
     width = Math.ceil(width * 1.12);
@@ -59,8 +102,18 @@ export interface CanvasData {
   styles: Map<string, NodeStyle>;
 }
 
-export function prepare(map: MindMap, layoutFn: (tree: TreeNode, styles: Map<string, NodeStyle>) => Layout, theme: Theme): CanvasData {
-  const tree = map.tree();
+/** `editing` = 正在編輯的元件與目前打的字：元件跟著文字即時變大 */
+export function prepare(
+  map: MindMap,
+  layoutFn: (tree: TreeNode, styles: Map<string, NodeStyle>) => Layout,
+  theme: Theme,
+  editing?: { id: string; text: string },
+): CanvasData {
+  let tree = map.tree();
+  if (editing) {
+    const swap = (n: TreeNode): TreeNode => (n.id === editing.id ? { ...n, text: editing.text } : { ...n, children: n.children.map(swap) });
+    tree = swap(tree);
+  }
   const nodes = new Map<string, TreeNode>();
   const depthOf = new Map<string, number>();
   const walk = (n: TreeNode, d: number) => {
@@ -144,7 +197,7 @@ export function edgeList(data: CanvasData, layout: Layout = data.layout): EdgeIn
 /**
  * 心智圖內容。`layout` 可以傳拖曳中的暫時排版（連接線跟著動）；`lifted` = 拖曳中的節點（畫在最上面、稍微透明）。
  */
-export function MindMapContent({ data, layout = data.layout, lifted }: { data: CanvasData; layout?: Layout; lifted?: Set<string> }) {
+export function MindMapContent({ data, layout = data.layout, lifted, editing }: { data: CanvasData; layout?: Layout; lifted?: Set<string>; editing?: string }) {
   const { theme, nodes, styles, tree } = data;
   const custom = customColors(tree);
   const horizontal = layout.structure === "mindmap" || layout.structure === "logic";
@@ -161,7 +214,7 @@ export function MindMapContent({ data, layout = data.layout, lifted }: { data: C
       </g>
       <g className="mm-nodes">
         {order.map((n) => (
-          <NodeShape key={n.id} placed={n} node={nodes.get(n.id)!} style={styles.get(n.id)!} theme={theme} inset={inset} portColor={custom.get(n.id) ?? theme.port} ghost={lifted?.has(n.id)} structure={layout.structure} />
+          <NodeShape key={n.id} placed={n} node={nodes.get(n.id)!} style={styles.get(n.id)!} theme={theme} inset={inset} portColor={custom.get(n.id) ?? theme.port} ghost={lifted?.has(n.id)} hideText={n.id === editing} structure={layout.structure} />
         ))}
       </g>
       {theme.port && (
@@ -189,6 +242,7 @@ export function NodeShape({
   dim,
   structure,
   ghost,
+  hideText,
 }: {
   placed: Placed;
   node: TreeNode;
@@ -199,9 +253,11 @@ export function NodeShape({
   dim?: boolean;
   structure: Layout["structure"];
   ghost?: boolean;
+  /** 正在編輯：文字由編輯框顯示，這裡不畫 */
+  hideText?: boolean;
 }) {
   const { width: w, height: h } = n;
-  const lines = (node.text || " ").split("\n");
+  const { lines } = wrapLines(node.text, st);
   const lh = st.fontSize * LINE_HEIGHT;
   const textTop = (h - lines.length * lh) / 2;
   const fill = st.fill === "none" ? "transparent" : st.fill;
@@ -254,7 +310,7 @@ export function NodeShape({
           <circle cx={w - inset} cy={h / 2} r={3.6} fill={portColor} />
         </>
       )}
-      <text fill={st.text} fontSize={st.fontSize} fontWeight={st.fontWeight} fontFamily={FONT} textAnchor="middle">
+      <text visibility={hideText ? "hidden" : undefined} fill={st.text} fontSize={st.fontSize} fontWeight={st.fontWeight} fontFamily={FONT} textAnchor="middle">
         {lines.map((line, i) => (
           <tspan key={i} x={w / 2} y={textTop + lh * (i + 0.5)} dominantBaseline="central">
             {line || " "}

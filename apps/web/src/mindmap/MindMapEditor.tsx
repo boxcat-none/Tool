@@ -16,13 +16,15 @@ import {
   type Layout,
   type MindMap,
   type NodeOverride,
+  type NodeStyle,
+  type Placed,
   type Structure,
 } from "@tool/mindmap";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { UndoManager } from "yjs";
 import { platform } from "../lib/platform";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
-import { edgeList, FONT, measureNode, MindMapContent, prepare } from "./MindMapCanvas";
+import { edgeList, FONT, LINE_HEIGHT, measureNode, MindMapContent, prepare, wrapLines } from "./MindMapCanvas";
 import { metaOf, type MindMapStore } from "./store";
 
 /**
@@ -154,9 +156,11 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
           return layoutTree(tree, (n) => measureNode(n.text, styles.get(n.id)!, depth.get(n.id)!), structure);
         },
         theme,
+        // 編輯中：元件跟著正在打的字即時變大、換行（連接線一起調整）
+        editing ? { id: editing.id, text: editing.text } : undefined,
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [map, version, structure, theme],
+    [map, version, structure, theme, editing?.id, editing?.text],
   );
   const { layout } = data;
   // 拖曳中：暫時移動的排版（連接線跟著動）
@@ -880,7 +884,7 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
               ))}
             </g>
             <g ref={contentRef}>
-              <MindMapContent data={data} layout={shown} lifted={drag?.ids} />
+              <MindMapContent data={data} layout={shown} lifted={drag?.ids} editing={editing?.id} />
             </g>
             {/* 點選線條用的透明粗線（不會匯出） */}
             <g className="mm-hits">
@@ -935,16 +939,9 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
             aria-label="元件文字"
             autoFocus
             value={editing.text}
-            rows={Math.max(1, editing.text.split("\n").length)}
-            style={{
-              left: editingPlaced.x * view.s + view.x,
-              top: editingPlaced.y * view.s + view.y,
-              minWidth: Math.max(editingPlaced.width * view.s, 140),
-              minHeight: editingPlaced.height * view.s,
-              fontSize: editStyle.fontSize * view.s,
-              fontWeight: editStyle.fontWeight,
-              fontFamily: FONT,
-            }}
+            rows={1}
+            spellCheck={false}
+            style={editBox(editingPlaced, editStyle, editing.text, view)}
             onFocus={(e) => {
               if (!editing.fresh) e.currentTarget.select();
               else e.currentTarget.setSelectionRange(editing.text.length, editing.text.length);
@@ -976,6 +973,33 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
       </div>
     </div>
   );
+}
+
+/**
+ * 編輯框放在元件的文字位置上（透明、同字型），看起來就是直接在元件裡打字。
+ * 元件大小已經依正在打的字算好（自動換行），編輯框照同樣的行數與寬度擺放。
+ */
+function editBox(n: Placed, st: NodeStyle, text: string, view: View): React.CSSProperties {
+  const { lines, width } = wrapLines(text, st);
+  const lh = st.fontSize * LINE_HEIGHT;
+  const wrapped = lines.length > text.split("\n").length;
+  // 有自動換行時寬度要剛好（瀏覽器才會在同一個地方換行）；沒有時留一點空間給下一個字
+  const w = width + (wrapped ? 1 : 8);
+  const h = lines.length * lh;
+  const x = n.x + (n.width - w) / 2;
+  const y = n.y + (n.height - h) / 2;
+  return {
+    left: x * view.s + view.x,
+    top: y * view.s + view.y,
+    width: w * view.s,
+    height: h * view.s,
+    fontSize: st.fontSize * view.s,
+    lineHeight: LINE_HEIGHT,
+    fontWeight: st.fontWeight,
+    fontFamily: FONT,
+    color: st.text,
+    caretColor: st.text,
+  };
 }
 
 const oneLine = (s: string) => {
