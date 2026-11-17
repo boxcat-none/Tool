@@ -118,6 +118,60 @@ describe("MindMap 基本操作", () => {
   });
 });
 
+describe("自由拖動的位置", () => {
+  it("每種結構各自記錄；設成 0 或 null 會清掉", () => {
+    const { m, a } = sample();
+    expect(m.offset(a)).toBeUndefined();
+    m.setOffset(a, [12.345, -40]);
+    expect(m.offset(a)).toEqual([12.3, -40]);
+    expect(m.offset(a, "org")).toBeUndefined();
+    m.setOffset(a, [5, 5], "org");
+    expect(m.offset(a, "org")).toEqual([5, 5]);
+    expect(m.hasOffsets()).toBe(true);
+    m.setOffset(a, [0, 0]);
+    expect(m.offset(a)).toBeUndefined();
+    expect(m.offset(a, "org")).toEqual([5, 5]);
+    m.setOffset(a, null, "org");
+    expect(m.hasOffsets("org")).toBe(false);
+  });
+
+  it("tree() 帶出目前結構的位移；中心主題沒有位移", () => {
+    const { m, r, a } = sample();
+    m.setOffset(a, [10, 20]);
+    m.setOffset(r, [99, 99]);
+    const t = m.tree();
+    expect(t.offset).toBeUndefined();
+    expect(t.children.find((n) => n.id === a)!.offset).toEqual([10, 20]);
+    expect(m.tree("logic").children.find((n) => n.id === a)!.offset).toBeUndefined();
+  });
+
+  it("自動排列（clearOffsets）只清掉目前結構，一次復原", () => {
+    const { m, a, b } = sample();
+    const undo = m.createUndoManager(LOCAL);
+    m.doc.transact(() => {
+      m.setOffset(a, [10, 0]);
+      m.setOffset(b, [0, 10]);
+      m.setOffset(b, [1, 1], "tree");
+    }, LOCAL);
+    m.doc.transact(() => m.clearOffsets(), LOCAL);
+    expect(m.hasOffsets()).toBe(false);
+    expect(m.offset(b, "tree")).toEqual([1, 1]);
+    undo.undo();
+    expect(m.offset(a)).toEqual([10, 0]);
+    expect(m.offset(b)).toEqual([0, 10]);
+  });
+
+  it("換到別的父節點時清掉位移；同一個父節點內調順序保留", () => {
+    const { m, b, c, a1 } = sample();
+    m.setOffset(a1, [30, 30]);
+    m.setOffset(c, [5, 5]);
+    m.move(a1, b);
+    expect(m.offset(a1)).toBeUndefined();
+    m.shift(c, -1);
+    expect(m.offset(c)).toEqual([5, 5]);
+  });
+});
+
 describe("多台裝置合併", () => {
   it("兩邊各自新增節點，合併後都在", () => {
     const { m, r } = sample();

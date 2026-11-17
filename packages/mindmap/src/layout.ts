@@ -80,7 +80,7 @@ export function layoutTree(
       n.children.forEach((c, i) => walk(c, n.id, x + spacing.level, depth + 1, depth === 0 ? i : branch));
     };
     walk(tree, null, 0, 0, -1);
-    return finish(out, structure);
+    return finish(out, structure, tree);
   }
 
   const vertical = structure === "org";
@@ -130,7 +130,7 @@ export function layoutTree(
   } else {
     place(tree, null, 0, 0, 0, 1, -1);
   }
-  return finish(out, structure);
+  return finish(out, structure, tree);
 }
 
 /** 第一層分支分到右邊和左邊：依序放右邊，直到右邊的高度超過一半 */
@@ -147,7 +147,23 @@ export function splitSides(extents: number[]): [number[], number[]] {
   return [right, left];
 }
 
-function finish(out: Map<string, Placed>, structure: Structure): Layout {
+/** 套用自由拖動的位移：節點和它底下的節點一起移動 */
+function applyOffsets(out: Map<string, Placed>, tree: TreeNode) {
+  const walk = (n: TreeNode, dx: number, dy: number) => {
+    const ox = dx + (n.offset?.[0] ?? 0);
+    const oy = dy + (n.offset?.[1] ?? 0);
+    const p = out.get(n.id);
+    if (p && (ox || oy)) {
+      p.x += ox;
+      p.y += oy;
+    }
+    for (const c of n.children) walk(c, ox, oy);
+  };
+  walk(tree, 0, 0);
+}
+
+function finish(out: Map<string, Placed>, structure: Structure, tree?: TreeNode): Layout {
+  if (tree) applyOffsets(out, tree);
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const n of out.values()) {
     x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y);
@@ -189,7 +205,8 @@ export function edgePath(layout: Layout, parent: Placed, child: Placed, style: E
     if (style === "elbow") return `M${r(sx)} ${r(sy)}V${r(my)}H${r(ex)}V${r(ey)}`;
     return `M${r(sx)} ${r(sy)}C${r(sx)} ${r(my)} ${r(ex)} ${r(my)} ${r(ex)} ${r(ey)}`;
   }
-  const dir = child.side === -1 ? -1 : 1;
+  // 方向依實際位置決定（自由拖到另一邊時，線從另一側出來）
+  const dir = child.x + child.width / 2 >= parent.x + parent.width / 2 ? 1 : -1;
   const parentUnder = underline && parent.depth > 0;
   // 中心主題沒有連接點（線從邊上出來）
   const pIn = parent.depth ? inset : 0;

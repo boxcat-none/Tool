@@ -75,7 +75,8 @@ export function prepare(map: MindMap, layoutFn: (tree: TreeNode, styles: Map<str
   return { layout: layoutFn(tree, styles), theme, tree, nodes, styles };
 }
 
-export function MindMapContent({ data, dim }: { data: CanvasData; dim?: string }) {
+/** dim = 拖曳中的節點（和它底下的節點），畫淡一點 */
+export function MindMapContent({ data, dim }: { data: CanvasData; dim?: Set<string> }) {
   const { layout, theme, nodes, styles, tree } = data;
   const custom = customColors(tree);
   const horizontal = layout.structure === "mindmap" || layout.structure === "logic";
@@ -93,7 +94,7 @@ export function MindMapContent({ data, dim }: { data: CanvasData; dim?: string }
     }
     const color = theme.coloredLines ? styles.get(child.id)!.stroke : custom.get(child.id) ?? theme.lineColor;
     edges.push(
-      <path key={child.id} d={d} fill="none" stroke={color} strokeWidth={lineWidthAt(theme, child.depth)} strokeLinecap="round" opacity={dim === child.id ? 0.3 : 1} />,
+      <path key={child.id} d={d} fill="none" stroke={color} strokeWidth={lineWidthAt(theme, child.depth)} strokeLinecap="round" opacity={dim?.has(child.id) ? 0.3 : 1} />,
     );
     if (theme.port) {
       // 連接點：畫在線的兩端
@@ -109,7 +110,7 @@ export function MindMapContent({ data, dim }: { data: CanvasData; dim?: string }
       <g className="mm-edges">{edges}</g>
       <g className="mm-nodes">
         {layout.nodes.map((n) => (
-          <NodeShape key={n.id} placed={n} node={nodes.get(n.id)!} style={styles.get(n.id)!} theme={theme} inset={inset} portColor={custom.get(n.id) ?? theme.port} dim={dim === n.id} structure={layout.structure} />
+          <NodeShape key={n.id} placed={n} node={nodes.get(n.id)!} style={styles.get(n.id)!} theme={theme} inset={inset} portColor={custom.get(n.id) ?? theme.port} dim={dim?.has(n.id)} structure={layout.structure} />
         ))}
       </g>
       <g className="mm-ports">{ports}</g>

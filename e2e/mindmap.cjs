@@ -110,6 +110,52 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   await page.keyboard.press("Control+y");
   check((await outline(page)) === md, "redo applies it again");
 
+  // ── 自由拖動：拖到空白處就停在那裡，子主題一起移動；自動排列回到原位 ──
+  // 相對中心主題的位置（選取的主題跑出畫面時畫面會自動捲動，所以不比螢幕座標）
+  const posOf = async (t) => {
+    const b = await node(page, t).boundingBox();
+    const r = await node(page, "中心主題").boundingBox();
+    return [Math.round(b.x - r.x), Math.round(b.y - r.y)];
+  };
+  const mdFree = await outline(page);
+  const g0 = await posOf("目標"), k0 = await posOf("營收"), r0 = await posOf("Risk第二行");
+  const [fx, fy] = await center(page, "目標");
+  // 找一個空白的落點（往下 160 px，碰到主題就再往下）
+  let dropY = fy + 160;
+  while (await page.evaluate(([x, y]) => !!document.elementFromPoint(x, y)?.closest("[data-node]"), [fx + 40, dropY])) dropY += 40;
+  await page.mouse.move(fx, fy); await page.mouse.down();
+  await page.mouse.move(fx + 10, fy + 10, { steps: 3 });
+  await page.mouse.move(fx + 40, dropY, { steps: 10 });
+  check((await page.locator(".mm-ui [data-node]").count()) >= 3 && (await page.locator(".mm-ui rect[fill-opacity]").count()) === 0, "free drag previews the whole subtree, no drop hint");
+  await page.mouse.up();
+  const g1 = await posOf("目標"), k1 = await posOf("營收"), r1 = await posOf("Risk第二行");
+  const d = [g1[0] - g0[0], g1[1] - g0[1]];
+  check(Math.abs(d[0] - 40) <= 2 && Math.abs(d[1] - (dropY - fy)) <= 2, "drop on empty space leaves the topic there", d);
+  check(Math.abs(k1[0] - k0[0] - d[0]) <= 1 && Math.abs(k1[1] - k0[1] - d[1]) <= 1 && r1.join() === r0.join(), "children move with it, others stay", [k1, k0, r1, r0]);
+  // 拖到自己的子主題上：什麼都不改
+  const [cx2, cy2] = await center(page, "目標");
+  const [dx2, dy2] = await center(page, "營收");
+  await page.mouse.move(cx2, cy2); await page.mouse.down();
+  await page.mouse.move(cx2 + 10, cy2, { steps: 3 });
+  await page.mouse.move(dx2, dy2, { steps: 10 });
+  await page.mouse.up();
+  check((await posOf("目標")).join() === g1.join() && (await outline(page)) === mdFree, "dropping onto its own child does nothing");
+  check((await outline(page)) === mdFree, "free drag does not change the tree");
+  // 按住 Shift 拖到別的主題上：也是自由放置，不換父節點
+  const [sx2, sy2] = await center(page, "時間表");
+  const [ox2, oy2] = await center(page, "中心主題");
+  await page.keyboard.down("Shift");
+  await page.mouse.move(sx2, sy2); await page.mouse.down();
+  await page.mouse.move(sx2 + 10, sy2, { steps: 3 });
+  await page.mouse.move(ox2, oy2, { steps: 10 });
+  await page.mouse.up();
+  await page.keyboard.up("Shift");
+  check((await outline(page)) === mdFree, "shift+drag onto a topic only moves it (no reparent)");
+  await page.keyboard.press("Control+z");
+  await page.getByRole("button", { name: "自動排列" }).click();
+  check((await posOf("目標")).join() === g0.join() && (await posOf("營收")).join() === k0.join(), "auto arrange puts topics back", [await posOf("目標"), g0]);
+  check(await page.getByRole("button", { name: "自動排列" }).isDisabled(), "auto arrange is disabled when nothing was moved");
+
   // ── 收合、展開 ──
   await node(page, "目標").click();
   await page.keyboard.press(" ");

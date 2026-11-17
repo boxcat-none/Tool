@@ -85,6 +85,34 @@ describe("layoutTree", () => {
     expect(l.byId.get(kids[0])!.x).toBeGreaterThan(l.byId.get(ids[0])!.x);
   });
 
+  it("自由拖動：節點和它底下的節點一起移動，其他節點不動", () => {
+    const { m, r, ids, kids } = sample();
+    const before = layoutTree(m.tree(), measure, "logic");
+    m.setOffset(ids[0], [100, -50]);
+    const after = layoutTree(m.tree(), measure, "logic");
+    const moved = (id: string) => [after.byId.get(id)!.x - before.byId.get(id)!.x, after.byId.get(id)!.y - before.byId.get(id)!.y];
+    expect(moved(ids[0])).toEqual([100, -50]);
+    for (const k of kids) expect(moved(k)).toEqual([100, -50]);
+    expect(moved(r)).toEqual([0, 0]);
+    expect(moved(ids[1])).toEqual([0, 0]);
+    // 子節點自己也拖過：位移相加
+    m.setOffset(kids[0], [0, 10]);
+    expect(layoutTree(m.tree(), measure, "logic").byId.get(kids[0])!.y - before.byId.get(kids[0])!.y).toBe(-40);
+    // 範圍跟著擴大
+    expect(after.bounds.x + after.bounds.width).toBeGreaterThan(before.bounds.x + before.bounds.width);
+  });
+
+  it("拖到中心主題另一側時，線從另一側出來", () => {
+    const { m, r, ids } = sample();
+    const l0 = layoutTree(m.tree(), measure, "logic");
+    m.setOffset(ids[1], [-(l0.byId.get(ids[1])!.x - l0.byId.get(r)!.x) - 200, 0]);
+    const l = layoutTree(m.tree(), measure, "logic");
+    const root = l.byId.get(r)!;
+    const child = l.byId.get(ids[1])!;
+    expect(child.x + child.width).toBeLessThan(root.x);
+    expect(edgePath(l, root, child, "straight")).toBe(`M${root.x} ${root.y + root.height / 2}L${child.x + child.width} ${child.y + child.height / 2}`);
+  });
+
   it("收合的節點：子節點不排版", () => {
     const { m, ids } = sample();
     m.setCollapsed(ids[0], true);

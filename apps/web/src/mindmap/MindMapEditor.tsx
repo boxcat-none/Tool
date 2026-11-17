@@ -25,7 +25,8 @@ import { metaOf, type MindMapStore } from "./store";
  *   點一下選取；點兩下（或 F2、或直接打字）編輯文字；Enter 完成、Shift+Enter 換行、Esc 取消
  *   Tab 新增子主題、Enter 新增同層主題（Shift+Enter 加在前面）、Delete 刪除
  *   方向鍵移動選取、Alt+↑↓ 調整順序、空白鍵收合／展開、Ctrl+Z／Y 復原／重做
- *   拖曳節點：放在別的節點中間 = 變成它的子主題，靠上／靠下 = 插在前面／後面
+ *   拖曳節點：放在別的節點中間 = 變成它的子主題，靠上／靠下 = 插在前面／後面；
+ *     放在空白處（或按住 Shift／Alt）= 自由放置，子主題一起移動；「自動排列」回到整齊排版
  *   拖曳空白處平移；滾輪捲動、Ctrl+滾輪或兩指縮放
  *   貼上多行文字：依縮排建立多個主題
  */
@@ -62,7 +63,8 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
   const [selected, setSelected] = useState<string | null>(map.rootId);
   const [editing, setEditing] = useState<{ id: string; text: string; fresh: boolean } | null>(null);
   const [view, setView] = useState<View>({ x: 0, y: 0, s: 1 });
-  const [drag, setDrag] = useState<{ id: string; dx: number; dy: number; target: DropTarget | null } | null>(null);
+  /** 拖曳節點：target = 放到別的主題上（換位置）；null = 放在空白處（自由放置） */
+  const [drag, setDrag] = useState<{ id: string; dx: number; dy: number; target: DropTarget | null; blocked?: boolean } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [history, setHistory] = useState({ undo: false, redo: false });
   const hostRef = useRef<HTMLDivElement>(null);
@@ -333,7 +335,7 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
 
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const gesture = useRef<
-    | { kind: "node"; id: string; pointerId: number; start: [number, number]; moved: boolean }
+    | { kind: "node"; id: string; pointerId: number; start: [number, number]; moved: boolean; view: View }
     | { kind: "pan"; pointerId: number; start: [number, number]; view: View; moved: boolean }
     | { kind: "pinch"; dist: number; mid: [number, number]; view: View }
     | null
@@ -371,7 +373,7 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
     const id = el.closest("[data-node]")?.getAttribute("data-node");
     if (id) {
       setSelected(id);
-      gesture.current = { kind: "node", id, pointerId: e.pointerId, start: p, moved: false };
+      gesture.current = { kind: "node", id, pointerId: e.pointerId, start: p, moved: false, view };
     } else {
       gesture.current = { kind: "pan", pointerId: e.pointerId, start: p, view, moved: false };
     }
@@ -399,9 +401,17 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
     g.moved = true;
     if (g.kind === "pan") {
       setView({ ...g.view, x: g.view.x + dx, y: g.view.y + dy });
-    } else if (g.id !== map.rootId) {
+    } else if (g.id === map.rootId) {
+      // 拖中心主題 = 移動整張圖的畫面
+      setView({ ...g.view, x: g.view.x + dx, y: g.view.y + dy });
+    } else {
       const [mx, my] = toMap(p);
-      setDrag({ id: g.id, dx: dx / view.s, dy: dy / view.s, target: dropTarget(layout, g.id, mx, my) });
+      // 按住 Shift 或 Alt：一定是自由放置（即使在別的主題上）
+      const target = e.shiftKey || e.altKey ? null : dropTarget(layout, g.id, mx, my);
+      // 放到自己的子主題上：不能放（放開時什麼都不做）；還在自己身上 = 微調位置，照樣自由放置
+      const over = layout.nodes.find((n) => mx >= n.x && mx <= n.x + n.width && my >= n.y && my <= n.y + n.height && n.id !== g.id);
+      const blocked = !target && !!over && !(e.shiftKey || e.altKey) && isBelow(layout, g.id, over.id);
+      setDrag({ id: g.id, dx: dx / view.s, dy: dy / view.s, target, blocked });
     }
   };
 
@@ -422,7 +432,14 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
     if (g.moved) {
       const d = drag;
       setDrag(null);
-      if (d?.target && e.type !== "pointercancel") act(() => map.move(d.id, d.target!.parent, d.target!.index));
+      if (!d || d.blocked || e.type === "pointercancel") return;
+      if (d.target) {
+        act(() => map.move(d.id, d.target!.parent, d.target!.index));
+      } else {
+        // 放在空白處：停在放開的位置（記成相對自動排版的位移，子主題一起移動）
+        const old = map.offset(d.id) ?? [0, 0];
+        act(() => map.setOffset(d.id, [old[0] + d.dx, old[1] + d.dy]));
+      }
       return;
     }
     // 點兩下編輯（滑鼠、觸控、觸控筆都一樣）
@@ -508,6 +525,17 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
   // ── 畫面 ──────────────────────────────────────────
 
   const sel = selected ? layout.byId.get(selected) : undefined;
+  // 拖曳中的節點與它底下的節點
+  const dragged = useMemo(() => {
+    if (!drag || !layout.byId.has(drag.id)) return undefined;
+    const out = new Set<string>();
+    const walk = (id: string) => {
+      out.add(id);
+      layout.byId.get(id)?.children.forEach(walk);
+    };
+    walk(drag.id);
+    return out;
+  }, [drag?.id, layout]); // eslint-disable-line react-hooks/exhaustive-deps
   const selNode = selected ? map.node(selected) : undefined;
   const horizontal = structure === "mindmap" || structure === "logic";
   const inset = theme.port && horizontal ? PORT_INSET : 0;
@@ -565,6 +593,15 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
           <span className="mm-zoom">{Math.round(view.s * 100)}%</span>
           <button type="button" className="mm-btn" onClick={() => zoomAt(1.2)} aria-label="放大">+</button>
           <button type="button" className="mm-btn" onClick={fit} title="整張圖置中（Ctrl+0）">置中</button>
+          <button
+            type="button"
+            className="mm-btn"
+            disabled={!map.hasOffsets()}
+            onClick={() => act(() => map.clearOffsets())}
+            title="拖動過的主題回到自動排版的位置"
+          >
+            自動排列
+          </button>
           <label className="mm-field">
             <select
               aria-label="匯出"
@@ -599,7 +636,7 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
         <svg ref={svgRef} className="mm-svg" width="100%" height="100%">
           <g transform={`translate(${view.x} ${view.y}) scale(${view.s})`}>
             <g ref={contentRef}>
-              <MindMapContent data={data} dim={drag?.id} />
+              <MindMapContent data={data} dim={dragged} />
             </g>
             {/* 介面層：選取框、拖曳提示（不會匯出） */}
             <g className="mm-ui" pointerEvents="none">
@@ -607,18 +644,24 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
                 <rect x={sel.x - 5} y={sel.y - 5} width={sel.width + 10} height={sel.height + 10} rx={10} fill="none" stroke={theme.accent} strokeWidth={2 / view.s} data-selected={sel.id} />
               )}
               {drag?.target && <DropHint layout={layout} target={drag.target} color={theme.accent} s={view.s} />}
-              {drag && layout.byId.get(drag.id) && (
-                <NodeShape
-                  placed={{ ...layout.byId.get(drag.id)!, x: layout.byId.get(drag.id)!.x + drag.dx, y: layout.byId.get(drag.id)!.y + drag.dy }}
-                  node={data.nodes.get(drag.id)!}
-                  style={data.styles.get(drag.id)!}
-                  theme={theme}
-                  inset={inset}
-                  portColor={theme.port}
-                  structure={structure}
-                  ghost
-                />
-              )}
+              {/* 拖曳預覽：整個子樹跟著移動 */}
+              {drag &&
+                [...(dragged ?? [])].map((id) => {
+                  const pl = layout.byId.get(id)!;
+                  return (
+                    <NodeShape
+                      key={id}
+                      placed={{ ...pl, x: pl.x + drag.dx, y: pl.y + drag.dy }}
+                      node={data.nodes.get(id)!}
+                      style={data.styles.get(id)!}
+                      theme={theme}
+                      inset={inset}
+                      portColor={theme.port}
+                      structure={structure}
+                      ghost
+                    />
+                  );
+                })}
             </g>
           </g>
         </svg>
@@ -665,10 +708,16 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
         )}
 
         {toast && <div className="mm-toast" role="status">{toast}</div>}
-        <p className="mm-hint">點兩下編輯 · Tab 子主題 · Enter 同層 · 拖曳節點換位置 · 拖曳空白處移動畫面</p>
+        <p className="mm-hint">點兩下編輯 · Tab 子主題 · Enter 同層 · 拖到主題上換位置、拖到空白處自由放置 · 拖曳空白處移動畫面</p>
       </div>
     </div>
   );
+}
+
+/** `id` 是否在 `ancestor` 底下（依排版的父子關係） */
+function isBelow(layout: ReturnType<typeof layoutTree>, ancestor: string, id: string): boolean {
+  for (let p = layout.byId.get(id)?.parent ?? null; p; p = layout.byId.get(p)?.parent ?? null) if (p === ancestor) return true;
+  return false;
 }
 
 function DropHint({ layout, target, color, s }: { layout: ReturnType<typeof layoutTree>; target: DropTarget; color: string; s: number }) {

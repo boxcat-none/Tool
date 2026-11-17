@@ -5,7 +5,10 @@ import * as Y from "yjs";
  * 心智圖資料模型（Yjs 文件）。和筆記本一樣用 Yjs，之後才能在多台裝置之間同步、合併。
  *
  *   meta   Y.Map  { schema, id, title, root, structure, theme, createdAt }
- *   nodes  Y.Map  nodeId → Y.Map { parent, order, text, collapsed?, color? }
+ *   nodes  Y.Map  nodeId → Y.Map { parent, order, text, collapsed?, color?, pos? }
+ *
+ * pos = 使用者自由拖動後的位移 { 結構: [dx, dy] }（相對於自動排版的位置，子節點跟著移動）。
+ * 每種結構各自記錄：在心智圖裡拖過的位置不會影響組織圖。
  *
  * 每個節點只記「父節點」和「在兄弟之間的順序」（fractional indexing），
  * 所以兩台裝置同時把同一個節點拖到不同位置時，只有最後一次生效，不會出現兩份。
@@ -34,11 +37,15 @@ export interface MindNode {
   color?: string;
 }
 
+export type Offset = [dx: number, dy: number];
+
 /** 排版用的樹（已排序、已處理迴圈；收合的節點沒有 children） */
 export interface TreeNode extends MindNode {
   children: TreeNode[];
   /** 收合時底下有幾個節點（畫「+3」用） */
   hidden: number;
+  /** 目前結構下自由拖動的位移（沒有拖過 = undefined） */
+  offset?: Offset;
 }
 
 export class MindMap {
@@ -189,6 +196,36 @@ export class MindMap {
     else m.delete("color");
   }
 
+  /** 自由拖動後的位移（某個結構下）；沒有拖過回傳 undefined */
+  offset(id: string, structure: Structure = this.structure): Offset | undefined {
+    const pos = this.nodes.get(id)?.get("pos") as Partial<Record<Structure, Offset>> | undefined;
+    return pos?.[structure];
+  }
+
+  /** 設定自由拖動的位移（null = 回到自動排版的位置） */
+  setOffset(id: string, offset: Offset | null, structure: Structure = this.structure): void {
+    const m = this.nodes.get(id);
+    if (!m) return;
+    const pos = { ...((m.get("pos") as Partial<Record<Structure, Offset>> | undefined) ?? {}) };
+    if (offset && (offset[0] || offset[1])) pos[structure] = [round1(offset[0]), round1(offset[1])];
+    else delete pos[structure];
+    if (Object.keys(pos).length) m.set("pos", pos);
+    else if (m.has("pos")) m.delete("pos");
+  }
+
+  /** 自動排列：清掉某個結構下所有自由拖動的位移 */
+  clearOffsets(structure: Structure = this.structure): void {
+    this.doc.transact(() => {
+      for (const id of this.nodes.keys()) if (this.offset(id, structure)) this.setOffset(id, null, structure);
+    });
+  }
+
+  /** 有沒有自由拖動過的節點 */
+  hasOffsets(structure: Structure = this.structure): boolean {
+    for (const id of this.nodes.keys()) if (this.offset(id, structure)) return true;
+    return false;
+  }
+
   /** 刪除節點與它底下所有節點（中心主題不能刪） */
   remove(ids: Iterable<string>): void {
     const index = this.childIndex();
@@ -215,7 +252,11 @@ export class MindMap {
     if (parent === id || this.isAncestor(id, parent)) return false;
     this.doc.transact(() => {
       m.set("order", this.orderAt(parent, index, id));
-      if (m.get("parent") !== parent) m.set("parent", parent);
+      if (m.get("parent") !== parent) {
+        m.set("parent", parent);
+        // 換到別的父節點：原本拖動的位移是相對舊位置的，清掉
+        if (m.has("pos")) m.delete("pos");
+      }
       this.nodes.get(parent)!.delete("collapsed");
     });
     return true;
@@ -232,13 +273,15 @@ export class MindMap {
   }
 
   /** 排版用的樹 */
-  tree(): TreeNode {
+  tree(structure: Structure = this.structure): TreeNode {
     const index = this.childIndex();
     const build = (id: string): TreeNode => {
       const n = this.node(id)!;
       const kids = index.get(id) ?? [];
-      if (n.collapsed && kids.length) return { ...n, children: [], hidden: countBelow(id, index) };
-      return { ...n, children: kids.map(build), hidden: 0 };
+      const offset = id === this.rootId ? undefined : this.offset(id, structure);
+      const extra = offset ? { offset } : {};
+      if (n.collapsed && kids.length) return { ...n, ...extra, children: [], hidden: countBelow(id, index) };
+      return { ...n, ...extra, children: kids.map(build), hidden: 0 };
     };
     return build(this.rootId);
   }
@@ -347,6 +390,8 @@ function countBelow(id: string, index: Map<string, string[]>): number {
   }
   return n;
 }
+
+const round1 = (v: number) => Math.round(v * 10) / 10;
 
 const oneLine = (s: string) => s.replace(/\s*\n\s*/g, " ").trim();
 
