@@ -6,7 +6,8 @@ export {
   openNotebookFile,
   saveNotebookFile,
 } from "./file";
-export { Notebook, SCHEMA_VERSION, type StrokeEntry } from "./notebook";
+export { Notebook, SCHEMA_VERSION, type ClipContent, type ImageOrder, type StrokeEntry } from "./notebook";
+export { IDENTITY, transformImage, transformMatrix, transformPoint, transformStroke, translation, type ContentTransform } from "./transform";
 export { PAPER_LABELS, paperContent } from "./paper";
 export { readOutline, writeOutline, type OutlineItem } from "./outline";
 export { exportPdf, importPdf, type ExportOptions } from "./pdf";

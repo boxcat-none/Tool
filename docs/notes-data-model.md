@@ -83,6 +83,18 @@ undo.undo(); // 只復原本機的動作
   整批一個 transaction → **一次復原、同步一次**；圖片用 `updateImage`，和筆畫在同一個 transaction。
 - 筆畫代號不變但內容改了，閱讀器的外框快取以內容判斷是否重算。
 
+### 縮放、旋轉、複製貼上、圖片上下順序（W14）
+
+- 變換（`transform.ts` 的 `ContentTransform`）：以 (cx, cy) 為中心等比例縮放、**順時針**旋轉（以未旋轉的頁面來看，和圖片的 `r` 同方向；
+  PDF 座標 y 向上，所以是數學上的負角度），再平移。筆畫每個點套用、粗細乘上倍數；圖片中心跟著移動、框跟著縮放，轉 90／270 度時寬高對調。
+- `transformContent(pageId, strokeIds, imageIds, t)`：移動、縮放、旋轉都走這個，一個 transaction（一次復原、同步一次），筆畫保留代號與疊放位置。
+  **圖片只能轉 90 度的倍數**（框一律水平），所以閱讀器在選取裡有圖片時把角度吸附到 90 度；只有筆跡時可以自由角度（接近直角時吸附）。
+- `copyContent` → `ClipContent { strokes, images, files }`（依疊放順序）；`pasteContent(pageId, clip, t?)` 加到該頁最上層、產生新代號。
+  圖片檔在共用的檔案庫裡，所以可以貼到另一本筆記本（`files` 帶著檔案資訊一起加進去）。剪貼簿放在閱讀器的記憶體（重新整理就沒了），
+  系統剪貼簿只放標記文字：之後複製了截圖，貼上時以截圖為準。
+- `reorderImages(ids, "front" | "back" | "forward" | "backward")`：只改選到的圖片的 `z`（在前後兩張沒選到的圖之間產生新 key），
+  多張保持相對順序；兩台裝置同時調整造成 `z` 重複時整頁重新編號。筆跡一律在圖片上面。
+
 ## 衝突情境（皆有自動測試，見 `packages/notes/test/notebook.test.ts`）
 
 | 情境 | 結果 |
@@ -187,4 +199,4 @@ pdf.js 一次只能顯示一份 PDF，所以：
 - 同步協定（W7，`packages/notes/src/sync.ts`）：Yjs 更新（y-protocols sync）、awareness、檔案庫傳輸（缺的才要、分塊、驗證雜湊），
   和連線方式無關；目前接 WebRTC（見 `docs/w7-lan-spike.md`）。收到的修改以 SyncSession 作為 origin，本機復原不會復原對方的動作。
 - W9–W11：配對方式、自動重新連線、awareness 即時筆跡。
-- 之後：複製貼上、調整圖片上下順序、套索縮放。
+- 之後：圖片自由角度旋轉（目前只能 90 度）、筆跡與圖片之間的上下順序（目前筆跡一律在上）。

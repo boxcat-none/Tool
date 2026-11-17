@@ -62,12 +62,14 @@ interface Props {
   onInsertImage: () => void;
   /** 存成 .guganote 檔 */
   onSave: () => void;
+  /** 有複製的內容時才有：貼上到目前這一頁（iPad 沒有鍵盤時用） */
+  onPaste?: () => void;
   /** 不能匯出時的原因（例如有密碼的 PDF） */
   exportBlocked?: string;
   exporting: boolean;
 }
 
-export function InkToolbar({ settings, onChange, canUndo, canRedo, onUndo, onRedo, onExport, onInsertImage, onSave, exportBlocked, exporting }: Props) {
+export function InkToolbar({ settings, onChange, canUndo, canRedo, onUndo, onRedo, onExport, onInsertImage, onSave, onPaste, exportBlocked, exporting }: Props) {
   const { tool } = settings;
   const isHl = tool === "highlighter";
   const colors = isHl ? HIGHLIGHTER_COLORS : PEN_COLORS;
@@ -100,6 +102,11 @@ export function InkToolbar({ settings, onChange, canUndo, canRedo, onUndo, onRed
       <button type="button" className="icon" aria-label="插入圖片" title="插入圖片（也可以直接貼上：Ctrl+V）" onClick={onInsertImage}>
         <svg className="icon__svg" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2" /><circle cx="9" cy="10" r="1.6" /><path d="m4 17 5-5 4 4 2.5-2.5L20 17" /></svg>
       </button>
+      {onPaste && (
+        <button type="button" className="icon" aria-label="貼上複製的內容（Ctrl+V）" title="貼上複製的內容到這一頁（Ctrl+V）" onClick={onPaste}>
+          <svg className="icon__svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4.5h6v3H9ZM9 6H6.5v14.5h11V6H15M9 12h6M9 16h4" /></svg>
+        </button>
+      )}
 
       {(tool === "pen" || tool === "highlighter") && (
         <>
