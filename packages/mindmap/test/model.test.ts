@@ -135,12 +135,12 @@ describe("自由拖動的位置", () => {
     expect(m.hasOffsets("org")).toBe(false);
   });
 
-  it("tree() 帶出目前結構的位移；中心主題沒有位移", () => {
+  it("tree() 帶出目前結構的位移；中心元件也可以有位移（可以拖動）", () => {
     const { m, r, a } = sample();
     m.setOffset(a, [10, 20]);
     m.setOffset(r, [99, 99]);
     const t = m.tree();
-    expect(t.offset).toBeUndefined();
+    expect(t.offset).toEqual([99, 99]);
     expect(t.children.find((n) => n.id === a)!.offset).toEqual([10, 20]);
     expect(m.tree("logic").children.find((n) => n.id === a)!.offset).toBeUndefined();
   });
@@ -362,5 +362,69 @@ describe("獨立元件與連線", () => {
     undo.undo();
     expect(m.isFloating(f)).toBe(true);
     expect(m.at(f)).toEqual([0, 0]);
+  });
+});
+
+describe("手拉的連接線", () => {
+  it("拉線不改變元件原本的上層與線；可以連到中心元件", () => {
+    const m = MindMap.create("中心");
+    const a = m.addChild(m.rootId, "A");
+    const b = m.addChild(a, "B");
+    const f = m.addFloating("F", [0, 0]);
+    const l1 = m.addLink(b, f)!;
+    const l2 = m.addLink(f, m.rootId)!;
+    expect(l1).toBeTruthy();
+    expect(l2).toBeTruthy();
+    expect(m.parentOf(b)).toBe(a);
+    expect(m.isFloating(f)).toBe(true);
+    expect(m.links().map((l) => [l.from, l.to])).toEqual([[b, f], [f, m.rootId]]);
+    // 一個元件可以有很多條線
+    expect(m.addLink(a, f)).toBeTruthy();
+    expect(m.links().filter((l) => l.to === f)).toHaveLength(2);
+  });
+
+  it("不能連自己、不能重複連（哪個方向都算），已經是上層／子元件也不行", () => {
+    const m = MindMap.create("中心");
+    const a = m.addChild(m.rootId, "A");
+    const f = m.addFloating("F", [0, 0]);
+    expect(m.addLink(a, a)).toBeNull();
+    expect(m.addLink(a, m.rootId)).toBeNull();
+    expect(m.addLink(m.rootId, a)).toBeNull();
+    expect(m.addLink(a, f)).toBeTruthy();
+    expect(m.addLink(f, a)).toBeNull();
+    expect(m.canLink(a, f)).toBe(false);
+  });
+
+  it("樣式、刪線；刪掉元件時連到它的線一起刪；可以復原", () => {
+    const m = MindMap.create("中心");
+    const undo = m.createUndoManager(LOCAL);
+    const a = m.addChild(m.rootId, "A");
+    const f = m.addFloating("F", [0, 0]);
+    let id = "";
+    m.doc.transact(() => (id = m.addLink(a, f)!), LOCAL);
+    m.setLinkStyle([id], { line: "straight", width: 5, dash: true, color: "#e03131" });
+    expect(m.link(id)).toMatchObject({ line: "straight", width: 5, dash: true, color: "#e03131" });
+    m.setLinkStyle([id], { dash: null, color: null });
+    expect(m.link(id)!.dash).toBeUndefined();
+    expect(m.link(id)!.color).toBeUndefined();
+    m.remove([f]);
+    expect(m.links()).toEqual([]);
+    expect(m.link(id)).toBeUndefined();
+    m.doc.transact(() => m.addLink(a, m.rootId), LOCAL);
+    expect(m.links()).toHaveLength(0); // a 的上層就是中心元件
+    const b = m.addFloating("B", [0, 0]);
+    m.doc.transact(() => (id = m.addLink(b, a)!), LOCAL);
+    m.doc.transact(() => m.removeLink([id]), LOCAL);
+    expect(m.links()).toHaveLength(0);
+    undo.undo();
+    expect(m.links()).toHaveLength(1);
+  });
+
+  it("中心元件也可以有自由拖動的位移", () => {
+    const m = MindMap.create("中心");
+    m.setOffset(m.rootId, [30, 10]);
+    expect(m.tree().offset).toEqual([30, 10]);
+    m.clearOffsets();
+    expect(m.tree().offset).toBeUndefined();
   });
 });

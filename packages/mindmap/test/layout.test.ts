@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { branchColors, dropTarget, edgePath, layoutForest, layoutTree, MindMap, moveNodes, neighbor, nodesInRect, segmentHitsRect, splitSides, subtreeIds, themeById, THEMES, topmost, type Layout, type Structure } from "../src";
+import { branchColors, dropTarget, edgePath, layoutForest, layoutTree, linkPath, MindMap, moveNodes, neighbor, nodesInRect, segmentHitsRect, splitSides, subtreeIds, themeById, THEMES, topmost, type Layout, type Structure } from "../src";
 
 const measure = () => ({ width: 80, height: 20 });
 
@@ -283,5 +283,23 @@ describe("layoutForest（獨立元件）", () => {
     const theme = themeById("rainbow");
     const c = branchColors(m.tree(), theme, m.floating());
     expect(c.get(f)).toBe(theme.palette[ids.length % theme.palette.length]);
+  });
+});
+
+describe("linkPath（手拉的線）", () => {
+  it("從起點朝向終點的那一側出發，接到終點朝向起點的那一側", () => {
+    const { m, ids } = sample();
+    const l = layoutTree(m.tree(), measure, "mindmap");
+    const right = l.byId.get(ids[0])!;
+    const left = [...l.nodes].find((n) => n.side === -1)!;
+    const d = linkPath(l, right, left, "straight");
+    const nums = d.match(/-?\d+(\.\d+)?/g)!.map(Number);
+    expect(nums[0]).toBeCloseTo(right.x);
+    expect(nums[2]).toBeCloseTo(left.x + left.width);
+    const org = layoutTree(m.tree(), measure, "org");
+    const a = org.byId.get(ids[0])!, b = org.byId.get(m.children(ids[0])[0])!;
+    const v = linkPath(org, a, b, "straight").match(/-?\d+(\.\d+)?/g)!.map(Number);
+    expect(v[1]).toBeCloseTo(a.y + a.height);
+    expect(v[3]).toBeCloseTo(b.y);
   });
 });

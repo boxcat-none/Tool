@@ -95,3 +95,9 @@
   .mm-menu__choice { padding: 6px 10px; }
   .mm-menu__swatch { width: 28px; height: 28px; }
 }
+
+/* 看得到的線與連接點不接收點擊：由下面的透明粗線（.mm-hits）或元件接 */
+.mm-edges,
+.mm-ports {
+  pointer-events: none;
+}

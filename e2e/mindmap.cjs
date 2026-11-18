@@ -166,12 +166,12 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   const edgeMid = await edgeD();
   const childMid = await posOf("營收");
   check(edgeMid !== edge0 && (await page.locator(".mm-ui rect[fill-opacity]:not(.mm-box)").count()) === 0, "while dragging, the connecting line follows (no drop hint on empty space)", [edge0, edgeMid]);
-  check(childMid.join() !== k0.join() && (await texts(page)).length === new Set(await texts(page)).size, "the whole subtree moves live (no duplicate ghost)");
+  check(childMid.join() === k0.join() && (await texts(page)).length === new Set(await texts(page)).size, "only the dragged element moves live; its children stay (no ghost)");
   await page.mouse.up();
   const g1 = await posOf("目標"), k1 = await posOf("營收"), r1 = await posOf("Risk第二行");
   const d = [g1[0] - g0[0], g1[1] - g0[1]];
   check(Math.abs(d[0] - 40) <= 2 && Math.abs(d[1] - (dropY - fy)) <= 2, "drop on empty space leaves the topic there", d);
-  check(Math.abs(k1[0] - k0[0] - d[0]) <= 1 && Math.abs(k1[1] - k0[1] - d[1]) <= 1 && r1.join() === r0.join(), "children move with it, others stay", [k1, k0, r1, r0]);
+  check(k1.join() === k0.join() && r1.join() === r0.join(), "children and others stay where they were", [k1, k0, r1, r0]);
   // 拖到自己的子主題上：什麼都不改
   const [cx2, cy2] = await center(page, "目標");
   const [dx2, dy2] = await center(page, "營收");
@@ -195,6 +195,18 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   await page.getByRole("button", { name: "自動排列" }).click();
   check((await posOf("目標")).join() === g0.join() && (await posOf("營收")).join() === k0.join(), "auto arrange puts topics back", [await posOf("目標"), g0]);
   check(await page.getByRole("button", { name: "自動排列" }).isDisabled(), "auto arrange is disabled when nothing was moved");
+  // 中心元件也可以拖，其他元件不動
+  const goalBox0 = await node(page, "目標").boundingBox();
+  const rootBox0 = await node(page, "主題").boundingBox();
+  const [rcx, rcy] = await center(page, "主題");
+  await page.mouse.move(rcx, rcy); await page.mouse.down();
+  await page.mouse.move(rcx, rcy + 10, { steps: 3 });
+  await page.mouse.move(rcx - 30, rcy + 50, { steps: 6 });
+  await page.mouse.up();
+  const goalBox1 = await node(page, "目標").boundingBox();
+  const rootBox1 = await node(page, "主題").boundingBox();
+  check(Math.round(rootBox1.y - rootBox0.y) === 50 && Math.round(goalBox1.y - goalBox0.y) === 0 && Math.round(goalBox1.x - goalBox0.x) === 0, "dragging the central element moves only it", [rootBox1.y - rootBox0.y, goalBox1.y - goalBox0.y]);
+  await page.keyboard.press("Control+z");
 
   // ── 右鍵拖曳移動整張圖（不開選單）──
   const cbox = await page.locator(".mm-canvas").boundingBox();
@@ -328,26 +340,41 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   await page.mouse.move(flx, fly, { steps: 4 });
   check(await page.locator('.mm-link[data-link-ok="true"]').count() === 1, "hovering a valid element highlights it");
   await page.mouse.up();
-  check((await edgeCount()) === e0 + 1 && /- 時間表\n\s+- 獨立/.test(await outline(page)), "releasing on an element connects it as a child", await outline(page));
+  const mdLinked = await outline(page);
+  check((await edgeCount()) === e0 + 1 && mdLinked === mdBeforeFloat + "\n# 獨立\n", "releasing on an element adds a line without changing anyone's parent", mdLinked);
   check((await posOf("獨立")).join() === fPos0.join(), "connected element stays where it was", [fPos0, await posOf("獨立")]);
-  // 不能連到自己的上層（會形成迴圈）
-  await node(page, "獨立").click();
-  check(await page.locator("[data-handle]").count() === 1, "…the connected element too");
-  [hdx, hdy] = await handleAt(null);
-  const [pax, pay] = await center(page, "時間表");
-  await page.mouse.move(hdx, hdy); await page.mouse.down();
-  await page.mouse.move(pax, pay, { steps: 6 });
-  check(await page.locator('.mm-link[data-link-ok="false"]').count() === 1, "linking to its own parent is shown as not allowed");
-  await page.mouse.up();
-  check((await edgeCount()) === e0 + 1, "…and does nothing");
-  // 點線條按 Delete：刪線，元件變回獨立元件、留在原地
-  const fid = await node(page, "獨立").getAttribute("data-node");
-  await page.mouse.click(...(await edgePoint(fid)));
-  await page.keyboard.press("Delete");
-  check((await edgeCount()) === e0 && (await texts(page)).includes("獨立") && !/- 時間表\n\s+- 獨立/.test(await outline(page)), "Delete on a line removes only the line");
-  check((await posOf("獨立")).join() === fPos0.join(), "detached element stays in place");
+  // 可以連到中心元件；已經有線的兩個元件不能再連
   await node(page, "獨立").click();
   check(await page.locator("[data-handle]").count() === 2, "a standalone element has handles on both sides");
+  const dragLink = async (to) => {
+    const [hx, hy] = await handleAt(null);
+    const [tx, ty] = await center(page, to);
+    await page.mouse.move(hx, hy); await page.mouse.down();
+    await page.mouse.move(tx, ty, { steps: 6 });
+    const ok = await page.locator(".mm-link").getAttribute("data-link-ok");
+    await page.mouse.up();
+    return ok;
+  };
+  check((await dragLink("時間表")) === "false" && (await edgeCount()) === e0 + 1, "linking two elements that already have a line is not allowed");
+  await node(page, "獨立").click();
+  check((await dragLink("主題")) === "true" && (await edgeCount()) === e0 + 2, "an element can be linked to the central element");
+  check((await outline(page)) === mdLinked, "…still without changing the tree");
+  // 點手拉的線按 Delete：只刪那條線
+  const linkIds = await page.$$eval('.mm-hits [data-edge^="link:"]', (els) => els.map((e) => e.getAttribute("data-edge")));
+  check(linkIds.length === 2, "hand-drawn lines are listed as lines", linkIds);
+  await page.mouse.click(...(await edgePoint(linkIds[1])));
+  await page.mouse.click(...(await edgePoint(linkIds[1])), { button: "right" });
+  check(await page.locator(".mm-menu__title").textContent() === "線條", "right-click a hand-drawn line opens the line menu");
+  await page.getByRole("group", { name: "虛線" }).getByRole("menuitemradio", { name: "虛線" }).click();
+  check(await page.locator(`.mm-hits [data-edge="${linkIds[1]}"]`).count() === 1 && await page.locator(".mm-edges path[stroke-dasharray]").count() >= 1, "hand-drawn line style can be changed");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Delete");
+  check((await edgeCount()) === e0 + 1 && (await texts(page)).includes("獨立"), "Delete on a hand-drawn line removes only that line");
+  await page.mouse.click(...(await edgePoint(linkIds[0])));
+  await page.keyboard.press("Delete");
+  check((await edgeCount()) === e0 && (await outline(page)) === mdLinked, "all lines removed, tree unchanged");
+  check((await posOf("獨立")).join() === fPos0.join(), "element stays in place");
+
   // 拖動獨立元件（已選取）
   const [glx, gly] = await center(page, "獨立");
   await page.mouse.move(glx, gly); await page.mouse.down();

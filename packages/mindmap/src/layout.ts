@@ -310,6 +310,35 @@ export function edgePath(layout: Layout, parent: Placed, child: Placed, style: E
   return `M${r(sx)} ${r(sy)}C${r(mx)} ${r(sy)} ${r(mx)} ${r(ey)} ${r(ex)} ${r(ey)}`;
 }
 
+/**
+ * 手拉的連接線：從 a 朝向 b 的那一側連到 b 朝向 a 的那一側（組織圖用上下，其他結構用左右）。
+ * 中心元件（深度 0）沒有連接點，線從邊上出來。
+ */
+export function linkPath(layout: Layout, a: Placed, b: Placed, style: EdgeStyle, opts: EdgeOptions = {}): string {
+  const r = (v: number) => Math.round(v * 10) / 10;
+  const inset = opts.portInset ?? 0;
+  const inA = a.depth ? inset : 0;
+  const inB = b.depth ? inset : 0;
+  if (layout.structure === "org") {
+    const down = b.y + b.height / 2 >= a.y + a.height / 2;
+    const sx = a.x + a.width / 2, ex = b.x + b.width / 2;
+    const sy = down ? a.y + a.height - inA : a.y + inA;
+    const ey = down ? b.y + inB : b.y + b.height - inB;
+    const my = (sy + ey) / 2;
+    if (style === "straight") return `M${r(sx)} ${r(sy)}L${r(ex)} ${r(ey)}`;
+    if (style === "elbow") return `M${r(sx)} ${r(sy)}V${r(my)}H${r(ex)}V${r(ey)}`;
+    return `M${r(sx)} ${r(sy)}C${r(sx)} ${r(my)} ${r(ex)} ${r(my)} ${r(ex)} ${r(ey)}`;
+  }
+  const right = b.x + b.width / 2 >= a.x + a.width / 2;
+  const sx = right ? a.x + a.width - inA : a.x + inA;
+  const ex = right ? b.x + inB : b.x + b.width - inB;
+  const sy = a.y + a.height / 2, ey = b.y + b.height / 2;
+  const mx = (sx + ex) / 2;
+  if (style === "straight") return `M${r(sx)} ${r(sy)}L${r(ex)} ${r(ey)}`;
+  if (style === "elbow") return `M${r(sx)} ${r(sy)}H${r(mx)}V${r(ey)}H${r(ex)}`;
+  return `M${r(sx)} ${r(sy)}C${r(mx)} ${r(sy)} ${r(mx)} ${r(ey)} ${r(ex)} ${r(ey)}`;
+}
+
 // ── 拖曳放下、方向鍵移動 ─────────────────────────────
 
 export interface DropTarget {

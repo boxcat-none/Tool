@@ -7,6 +7,11 @@ import * as Y from "yjs";
  *   meta   Y.Map  { schema, id, title, root, structure, theme, createdAt }
  *   nodes  Y.Map  nodeId → Y.Map { parent, order, text, collapsed?, color?, pos?, style?, at? }
  *
+ *   links  Y.Map  linkId → { from, to, line?, width?, dash?, color? }   手拉的連接線
+ *
+ * 手拉的連接線和「上層 → 子元件」的線分開存：拉線不會改變元件原本的上層，也不會斷掉原本的線；
+ * 任兩個元件都可以連（包括中心元件），一個元件可以有很多條線。
+ *
  * 獨立元件 = parent 是 null 的元件（中心元件以外）：沒有連到任何元件，位置記在 at = [x, y]（左上角，畫面座標）。
  * 從元件拉線連到獨立元件，它就變成那個元件的子元件；刪掉連接線，子元件變回獨立元件。
  *
@@ -65,15 +70,91 @@ export interface TreeNode extends MindNode {
   style?: NodeOverride;
 }
 
+/** 手拉的連接線 */
+export interface MindLink {
+  id: string;
+  from: string;
+  to: string;
+  line?: "curve" | "elbow" | "straight";
+  width?: number;
+  dash?: boolean;
+  color?: string;
+}
+
+export type LinkStyle = Omit<MindLink, "id" | "from" | "to">;
+
 export class MindMap {
   readonly doc: Y.Doc;
   private readonly meta: Y.Map<unknown>;
   private readonly nodes: Y.Map<Y.Map<unknown>>;
+  /** order = 建立順序（fractional indexing），讀取時不帶出 */
+  private readonly linkMap: Y.Map<Omit<MindLink, "id"> & { order?: string }>;
 
   constructor(doc: Y.Doc = new Y.Doc()) {
     this.doc = doc;
     this.meta = doc.getMap("meta");
     this.nodes = doc.getMap("nodes");
+    this.linkMap = doc.getMap("links");
+  }
+
+  // ── 手拉的連接線 ──────────────────────────────────
+
+  /** 所有手拉的連接線（兩端都還在的；依建立順序） */
+  links(): MindLink[] {
+    const out: (MindLink & { order: string })[] = [];
+    for (const [id, l] of this.linkMap) if (this.nodes.has(l.from) && this.nodes.has(l.to)) out.push({ ...l, id, order: l.order ?? "" });
+    out.sort((a, b) => (a.order < b.order ? -1 : a.order > b.order ? 1 : a.id < b.id ? -1 : 1));
+    return out.map(({ order: _order, ...l }) => l);
+  }
+
+  link(id: string): MindLink | undefined {
+    const l = this.linkMap.get(id);
+    if (!l) return undefined;
+    const { order: _order, ...rest } = l;
+    return { ...rest, id };
+  }
+
+  /** 兩個元件之間已經有線（手拉的、或上層 → 子元件的），哪個方向都算 */
+  connected(a: string, b: string): boolean {
+    if (this.effectiveParent(a) === b || this.effectiveParent(b) === a) return true;
+    return this.links().some((l) => (l.from === a && l.to === b) || (l.from === b && l.to === a));
+  }
+
+  /** 可以從 from 拉線到 to：不同的兩個元件、都存在、之間還沒有線 */
+  canLink(from: string, to: string): boolean {
+    return from !== to && this.nodes.has(from) && this.nodes.has(to) && !this.connected(from, to);
+  }
+
+  /** 拉一條線（不改變任何元件的上層）；不能連時回傳 null */
+  addLink(from: string, to: string): string | null {
+    if (!this.canLink(from, to)) return null;
+    const id = newId();
+    let last: string | null = null;
+    for (const l of this.linkMap.values()) if (l.order && (last === null || l.order > last)) last = l.order;
+    this.linkMap.set(id, { from, to, order: generateKeyBetween(last, null) });
+    return id;
+  }
+
+  removeLink(ids: Iterable<string>): void {
+    this.doc.transact(() => {
+      for (const id of ids) this.linkMap.delete(id);
+    });
+  }
+
+  /** 修改線的樣式：欄位設成 null = 回到預設 */
+  setLinkStyle(ids: Iterable<string>, patch: { [K in keyof LinkStyle]?: LinkStyle[K] | null }): void {
+    this.doc.transact(() => {
+      for (const id of ids) {
+        const l = this.linkMap.get(id);
+        if (!l) continue;
+        const next: Record<string, unknown> = { ...l };
+        for (const [k, v] of Object.entries(patch)) {
+          if (v === null || v === undefined || v === false) delete next[k];
+          else next[k] = v;
+        }
+        this.linkMap.set(id, next as Omit<MindLink, "id">);
+      }
+    });
   }
 
   static create(title: string, rootText = title): MindMap {
@@ -329,6 +410,8 @@ export class MindMap {
           this.nodes.delete(cur);
         }
       }
+      // 連到被刪掉元件的手拉線一起刪
+      for (const [lid, l] of [...this.linkMap]) if (!this.nodes.has(l.from) || !this.nodes.has(l.to)) this.linkMap.delete(lid);
     });
   }
 
@@ -369,7 +452,8 @@ export class MindMap {
     const build = (id: string): TreeNode => {
       const n = this.node(id)!;
       const kids = index.get(id) ?? [];
-      const offset = id === top ? undefined : this.offset(id, structure);
+      // 獨立元件的位置用 at；中心元件和其他元件用自由拖動的位移
+      const offset = id === top && top !== this.rootId ? undefined : this.offset(id, structure);
       const style = this.nodeStyle(id);
       const extra = { ...(offset ? { offset } : {}), ...(style ? { style } : {}) };
       if (n.collapsed && kids.length) return { ...n, ...extra, children: [], hidden: countBelow(id, index) };
@@ -431,7 +515,7 @@ export class MindMap {
 
   /** 只追蹤 `origin` 的修改（其他裝置同步來的不會被復原）；本機修改請包在 doc.transact(fn, origin) */
   createUndoManager(origin: unknown): Y.UndoManager {
-    return new Y.UndoManager([this.nodes, this.meta], { trackedOrigins: new Set([origin]), captureTimeout: 0 });
+    return new Y.UndoManager([this.nodes, this.meta, this.linkMap], { trackedOrigins: new Set([origin]), captureTimeout: 0 });
   }
 
   // ── 內部 ───────────────────────────────────────────

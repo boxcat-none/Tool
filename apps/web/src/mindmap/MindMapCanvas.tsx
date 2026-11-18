@@ -3,10 +3,12 @@ import {
   edgePath,
   layoutForest,
   lineWidthAt,
+  linkPath,
   PORT_INSET,
   sketchJitter,
   stickyTilt,
   type Layout,
+  type MindLink,
   type MindMap,
   type NodeStyle,
   type Placed,
@@ -106,6 +108,8 @@ export interface CanvasData {
   tree: TreeNode;
   /** 中心元件的樹＋所有獨立元件的樹 */
   forest: TreeNode[];
+  /** 手拉的連接線 */
+  links: MindLink[];
   /** 節點代號 → 節點（文字等） */
   nodes: Map<string, TreeNode>;
   styles: Map<string, NodeStyle>;
@@ -134,7 +138,7 @@ export function prepare(map: MindMap, structure: Structure, theme: Theme, editin
   const styles = new Map<string, NodeStyle>();
   for (const [id, d] of depthOf) styles.set(id, withOverride(theme, theme.style(d, colors.get(id)!), nodes.get(id)!.style?.shape, colors.get(id)!));
   const layout = layoutForest(tree, floating, (n) => measureNode(n.text, styles.get(n.id)!, depthOf.get(n.id)!), structure);
-  return { layout, theme, tree, forest: [tree, ...floating], nodes, styles };
+  return { layout, theme, tree, forest: [tree, ...floating], links: map.links(), nodes, styles };
 }
 
 const isDark = (hex: string) => {
@@ -157,10 +161,17 @@ function withOverride(theme: Theme, st: NodeStyle, shape: NodeShapeName | undefi
 
 type NodeShapeName = NonNullable<NonNullable<TreeNode["style"]>["shape"]>;
 
-/** 一條連接線（以子主題代號為代號） */
+/** 手拉連接線在畫面上的代號（和「上層 → 子元件」的線分開：那種線用子元件代號） */
+export const LINK_PREFIX = "link:";
+
+/** 一條連接線：上層 → 子元件（代號 = 子元件代號），或手拉的線（代號 = link:線的代號） */
 export interface EdgeInfo {
   id: string;
+  /** 起點元件（上層、或手拉線的起點） */
   parent: string;
+  /** 終點元件 */
+  child: string;
+  link: boolean;
   d: string;
   color: string;
   width: number;
@@ -192,10 +203,35 @@ export function edgeList(data: CanvasData, layout: Layout = data.layout): EdgeIn
     out.push({
       id: child.id,
       parent: parent.id,
+      child: child.id,
+      link: false,
       d,
       color: theme.coloredLines ? styles.get(child.id)!.stroke : custom.get(child.id) ?? theme.lineColor,
       width: own?.width ?? lineWidthAt(theme, child.depth),
       dash: !!own?.dash,
+      from: [nums[0], nums[1]],
+      to: [nums[nums.length - 2], nums[nums.length - 1]],
+    });
+  }
+  // 手拉的線（兩端都看得到才畫；收合藏起來的不畫）
+  for (const l of data.links) {
+    const a = layout.byId.get(l.from), b = layout.byId.get(l.to);
+    if (!a || !b) continue;
+    let d = linkPath(layout, a, b, l.line ?? theme.edge, { portInset: inset });
+    if (theme.sketchy) {
+      const j = sketchJitter(l.id);
+      d = d.replace(/-?\d+(\.\d+)?/g, (m) => String(Math.round(j(Number(m)) * 10) / 10));
+    }
+    const nums = d.match(/-?\d+(\.\d+)?/g)!.map(Number);
+    out.push({
+      id: LINK_PREFIX + l.id,
+      parent: l.from,
+      child: l.to,
+      link: true,
+      d,
+      color: l.color ?? custom.get(l.from) ?? theme.lineColor,
+      width: l.width ?? lineWidthAt(theme, 2),
+      dash: !!l.dash,
       from: [nums[0], nums[1]],
       to: [nums[nums.length - 2], nums[nums.length - 1]],
     });
@@ -232,7 +268,7 @@ export function MindMapContent({ data, layout = data.layout, lifted, editing }: 
             <g key={e.id}>
               {/* 中心主題（標籤）沒有連接點，線直接從邊上出來 */}
               {layout.byId.get(e.parent)!.depth > 0 && <circle cx={e.from[0]} cy={e.from[1]} r={3.6} fill={custom.get(e.parent) ?? theme.port} />}
-              <circle cx={e.to[0]} cy={e.to[1]} r={3.6} fill={custom.get(e.id) ?? theme.port} />
+              {layout.byId.get(e.child)!.depth > 0 && <circle cx={e.to[0]} cy={e.to[1]} r={3.6} fill={custom.get(e.child) ?? theme.port} />}
             </g>
           ))}
         </g>

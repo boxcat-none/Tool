@@ -7,10 +7,8 @@ import {
   saveMindMapFile,
   segmentHitsRect,
   STRUCTURES,
-  subtreeIds,
   THEMES,
   themeById,
-  topmost,
   type DropTarget,
   type Layout,
   type MindMap,
@@ -23,7 +21,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { UndoManager } from "yjs";
 import { platform } from "../lib/platform";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
-import { edgeList, FONT, LINE_HEIGHT, MIN_HEIGHT, MIN_WIDTH, MindMapContent, prepare, wrapLines } from "./MindMapCanvas";
+import { edgeList, FONT, LINK_PREFIX, LINE_HEIGHT, MIN_HEIGHT, MIN_WIDTH, MindMapContent, prepare, wrapLines } from "./MindMapCanvas";
 import { metaOf, type MindMapStore } from "./store";
 
 /**
@@ -33,7 +31,8 @@ import { metaOf, type MindMapStore } from "./store";
  *   左鍵點主題／線條 = 選取（Shift 加選）；點兩下（或 F2、直接打字）編輯文字
  *   左鍵按住背景拖曳 = 拉出選取框，框選主題與線條（Shift 加選）
  *   右鍵按住背景（或任何地方）拖曳 = 移動整張圖；右鍵點一下 = 操作選單（主題、線條、背景各有不同選項）
- *   拖曳主題：放到別的主題中間 = 變成它的子主題，靠上／靠下 = 插在前後；放在空白處（或按住 Shift／Alt）= 自由放置。
+ *   拖曳元件：放到別的元件中間 = 變成它的子元件，靠上／靠下 = 插在前後；放在空白處（或按住 Shift／Alt）= 自由放置。
+ *     只有拖的元件（和其他選取的元件）會動，子元件留在原地（中心元件也一樣可以拖）。
  *     選了多個元件時一起自由移動。拖曳時連接線即時跟著動
  * 連接線：選取元件後兩側出現圓點，從圓點拉到另一個元件 = 連線（那個元件變成子元件，位置不變）；
  *   刪掉線條 = 子元件變成獨立元件。右鍵點元件新增的元件會自動連線；右鍵點背景新增的是獨立元件（不連線）
@@ -156,15 +155,17 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
   // 拖曳中：暫時移動的排版（連接線跟著動）
   const shown = useMemo(() => (drag ? moveNodes(layout, drag.ids, drag.dx, drag.dy) : layout), [layout, drag]);
   const edges = useMemo(() => edgeList(data, shown), [data, shown]);
+  const edgeSet = useMemo(() => new Set(edges.map((e) => e.id)), [edges]);
+  const edgeById = (id: string) => edges.find((e) => e.id === id);
 
   // 選取的主題被刪掉（例如復原）時拿掉
   useEffect(() => {
     const nodes = [...sel.nodes].filter((id) => layout.byId.has(id));
-    const edgeIds = [...sel.edges].filter((id) => layout.byId.has(id));
+    const edgeIds = [...sel.edges].filter((id) => edgeSet.has(id));
     if (nodes.length === sel.nodes.size && edgeIds.length === sel.edges.size && (!sel.primary || layout.byId.has(sel.primary))) return;
     const primary = sel.primary && layout.byId.has(sel.primary) ? sel.primary : nodes[0] ?? (map.has(sel.primary ?? "") ? null : map.rootId);
     setSel({ nodes: new Set(primary && !nodes.length ? [primary] : nodes), edges: new Set(edgeIds), primary });
-  }, [layout, sel, map]);
+  }, [layout, sel, map, edgeSet]);
 
   // ── 視圖：置中、縮放 ──────────────────────────────
 
@@ -289,29 +290,61 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
     startEdit(created, "");
   };
 
-  /** 從 from 拉線到 to：to 變成 from 的子元件，畫面上的位置不變 */
-  const canLink = (from: string, to: string) =>
-    to !== from && to !== map.rootId && map.has(to) && map.parentOf(to) !== from && !map.isAncestor(to, from);
+  /** 從 from 拉線到 to：多一條線，兩個元件原本的線、上層、位置都不變 */
+  const canLink = (from: string, to: string) => map.canLink(from, to);
   const connect = (from: string, to: string) => {
-    const before = layout.byId.get(to);
-    if (!before || !canLink(from, to)) return;
-    act(() => {
-      if (!map.move(to, from)) return;
-      const after = prepare(map, structure, theme).layout.byId.get(to);
-      if (after) map.setOffset(to, [before.x - after.x, before.y - after.y]);
-    });
-    setSel({ nodes: new Set(), edges: new Set([to]), primary: null });
+    let id: string | null = null;
+    act(() => (id = map.addLink(from, to)));
+    if (id) setSel({ nodes: new Set(), edges: new Set([LINK_PREFIX + id]), primary: null });
   };
+
+  /** 只移動 moved 裡的元件 (dx, dy)：子元件（沒選到的）留在原地 */
+  const moveOnly = (moved: Set<string>, dx: number, dy: number) =>
+    act(() => {
+      const shiftBy = (id: string, k: number) => {
+        const old = map.offset(id) ?? [0, 0];
+        map.setOffset(id, [old[0] + dx * k, old[1] + dy * k]);
+      };
+      for (const id of moved) {
+        const parent = map.parentOf(id);
+        if (parent && moved.has(parent)) continue; // 上層也在動：跟著上層
+        if (map.isFloating(id)) {
+          const p = layout.byId.get(id)!;
+          map.setAt(id, [p.x + dx, p.y + dy]);
+        } else shiftBy(id, 1);
+      }
+      // 位移會傳給子元件：沒選到的子元件反方向補回來，畫面上不動（收合的也算）
+      for (const id of moved) for (const c of map.children(id)) if (!moved.has(c)) shiftBy(c, -1);
+    });
+
+  /** 選取的元件回到自動排版的位置：子元件（沒選到的）留在原地 */
+  const resetOffsets = (ids: string[]) =>
+    act(() => {
+      const set = new Set(ids);
+      for (const id of ids) {
+        const old = map.offset(id);
+        if (!old) continue;
+        map.setOffset(id, null);
+        for (const c of map.children(id)) {
+          if (set.has(c)) continue;
+          const o = map.offset(c) ?? [0, 0];
+          map.setOffset(c, [o[0] + old[0], o[1] + old[1]]);
+        }
+      }
+    });
 
   /** 刪掉線條：子元件（和它底下的元件）變成獨立元件，留在原地 */
   const detachEdges = (ids: string[]) => {
     act(() => {
+      map.removeLink(ids.filter((id) => id.startsWith(LINK_PREFIX)).map((id) => id.slice(LINK_PREFIX.length)));
       for (const id of ids) {
+        if (id.startsWith(LINK_PREFIX)) continue;
         const p = layout.byId.get(id);
         if (p?.parent) map.detach(id, [p.x, p.y]);
       }
     });
-    setSel(single(ids[0] ?? null));
+    const first = ids.find((id) => !id.startsWith(LINK_PREFIX));
+    setSel(single(first ?? null));
   };
 
   /** 刪除選取的主題（中心主題不會被刪） */
@@ -335,7 +368,7 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
 
   const selectAll = () => {
     const ids = layout.nodes.map((n) => n.id);
-    setSel({ nodes: new Set(ids), edges: new Set(layout.nodes.filter((n) => n.parent).map((n) => n.id)), primary: selected ?? map.rootId });
+    setSel({ nodes: new Set(ids), edges: new Set(edges.map((e) => e.id)), primary: selected ?? map.rootId });
   };
 
   const setStructure = (s: Structure) => act(() => (map.structure = s));
@@ -595,21 +628,18 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
     }
     if (g.kind === "pan") {
       setView({ ...g.view, x: g.view.x + dx, y: g.view.y + dy });
-    } else if (g.id === map.rootId && !(sel.nodes.size > 1 && sel.nodes.has(g.id))) {
-      // 拖中心主題 = 移動整張圖的畫面
-      setView({ ...g.view, x: g.view.x + dx, y: g.view.y + dy });
     } else {
       const [mx, my] = toMap(p);
-      // 一起移動的主題：選了多個 → 全部（中心主題除外）；否則只有這一個
-      const group = sel.nodes.size > 1 && sel.nodes.has(g.id) ? topmost(layout, [...sel.nodes].filter((id) => id !== map.rootId)) : [g.id];
+      // 一起移動的元件：選了多個 → 選到的全部；否則只有這一個（子元件不跟著動）
+      const group = sel.nodes.size > 1 && sel.nodes.has(g.id) ? [...sel.nodes].filter((id) => layout.byId.has(id)) : [g.id];
       const multi = group.length > 1;
-      // 按住 Shift 或 Alt、或多選：一定是自由放置
-      const free = e.shiftKey || e.altKey || multi;
+      // 按住 Shift 或 Alt、或多選、或中心元件：一定是自由放置
+      const free = e.shiftKey || e.altKey || multi || g.id === map.rootId;
       const target = free ? null : dropTarget(layout, g.id, mx, my);
       // 放到自己的子主題上：不能放；還在自己身上 = 微調位置，照樣自由放置
       const over = layout.nodes.find((n) => mx >= n.x && mx <= n.x + n.width && my >= n.y && my <= n.y + n.height && n.id !== g.id);
       const blocked = !target && !!over && !free && isBelow(layout, g.id, over.id);
-      setDrag({ roots: group, ids: subtreeIds(layout, group), dx: dx / view.s, dy: dy / view.s, target, blocked });
+      setDrag({ roots: group, ids: new Set(group), dx: dx / view.s, dy: dy / view.s, target, blocked });
     }
   };
 
@@ -662,18 +692,8 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
       if (d.target) {
         act(() => map.move(g.id, d.target!.parent, d.target!.index));
       } else {
-        // 放在空白處：停在放開的位置（記成相對自動排版的位移，子元件一起移動；獨立元件直接改位置）
-        act(() => {
-          for (const id of d.roots) {
-            if (map.isFloating(id)) {
-              const p = layout.byId.get(id)!;
-              map.setAt(id, [p.x + d.dx, p.y + d.dy]);
-              continue;
-            }
-            const old = map.offset(id) ?? [0, 0];
-            map.setOffset(id, [old[0] + d.dx, old[1] + d.dy]);
-          }
-        });
+        // 放在空白處：停在放開的位置（只有拖的元件動，子元件留在原地）
+        moveOnly(d.ids, d.dx, d.dy);
       }
       return;
     }
@@ -759,15 +779,28 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
 
   // ── 選單內容 ──────────────────────────────────────
 
+  // ids 可以是元件、或線條（上層 → 子元件的線用子元件代號；手拉的線是 link:代號）
+  const isLink = (id: string) => id.startsWith(LINK_PREFIX);
+  const linkId = (id: string) => id.slice(LINK_PREFIX.length);
   const styleValue = <K extends keyof NodeOverride>(ids: string[], key: K): string => {
-    const vals = new Set(ids.map((id) => String(map.nodeStyle(id)?.[key] ?? "")));
+    const vals = new Set(ids.map((id) => String((isLink(id) ? (map.link(linkId(id)) as NodeOverride | undefined) : map.nodeStyle(id))?.[key] ?? "")));
     return vals.size === 1 ? [...vals][0] : "?";
   };
-  const setStyle = (ids: string[], patch: Parameters<MindMap["setNodeStyle"]>[1]) => act(() => map.setNodeStyle(ids, patch));
+  const setStyle = (ids: string[], patch: Parameters<MindMap["setNodeStyle"]>[1]) =>
+    act(() => {
+      map.setNodeStyle(ids.filter((id) => !isLink(id)), patch);
+      const { shape: _shape, ...linkPatch } = patch;
+      map.setLinkStyle(ids.filter(isLink).map(linkId), linkPatch);
+    });
   const colorValue = (ids: string[]) => {
-    const vals = new Set(ids.map((id) => map.node(id)?.color ?? null));
+    const vals = new Set(ids.map((id) => (isLink(id) ? map.link(linkId(id))?.color : map.node(id)?.color) ?? null));
     return vals.size === 1 ? [...vals][0] : "?";
   };
+  const setColor = (ids: string[], c: string | null) =>
+    act(() => {
+      ids.filter((id) => !isLink(id)).forEach((id) => map.setColor(id, c));
+      map.setLinkStyle(ids.filter(isLink).map(linkId), { color: c });
+    });
   /** 線條設定（ids = 線條，也就是子主題） */
   const lineItems = (ids: string[]): MenuItem[] => [
     { kind: "choices", label: "線型", options: LINES, value: styleValue(ids, "line"), onSelect: (v) => setStyle(ids, { line: (v || null) as NodeOverride["line"] | null }) },
@@ -802,15 +835,18 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
         ],
       };
     }
-    const edgeIds = [...sel.edges].filter((id) => layout.byId.has(id));
+    const edgeIds = [...sel.edges].filter((id) => edgeSet.has(id));
     if (menu.kind === "edge") {
       return {
         title: edgeIds.length > 1 ? `${edgeIds.length} 條線` : "線條",
         items: [
           ...lineItems(edgeIds),
-          { kind: "colors", label: "顏色", options: COLORS, value: colorValue(edgeIds), onSelect: (c) => act(() => edgeIds.forEach((id) => map.setColor(id, c))) },
+          { kind: "colors", label: "顏色", options: COLORS, value: colorValue(edgeIds), onSelect: (c) => setColor(edgeIds, c) },
           { kind: "separator" },
-          { kind: "action", label: "選取線條兩端的元件", onSelect: () => setSel({ nodes: new Set(edgeIds.flatMap((id) => [id, layout.byId.get(id)!.parent!])), edges: new Set(edgeIds), primary: edgeIds[0] }) },
+          { kind: "action", label: "選取線條兩端的元件", onSelect: () => {
+              const ends = edgeIds.flatMap((id) => { const e = edgeById(id); return e ? [e.parent, e.child] : []; });
+              setSel({ nodes: new Set(ends), edges: new Set(edgeIds), primary: ends[1] ?? null });
+            } },
           { kind: "action", label: edgeIds.length > 1 ? `刪除 ${edgeIds.length} 條線` : "刪除線條", hint: "Delete", danger: true, onSelect: () => detachEdges(edgeIds) },
         ],
       };
@@ -835,7 +871,7 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
     const linked = nonRoot.filter((id) => !map.isFloating(id));
     if (linked.length) items.push(...lineItems(linked));
     items.push({ kind: "separator" });
-    if (ids.some((id) => map.offset(id))) items.push({ kind: "action", label: "回到自動排版的位置", onSelect: () => act(() => ids.forEach((id) => map.setOffset(id, null))) });
+    if (ids.some((id) => map.offset(id))) items.push({ kind: "action", label: "回到自動排版的位置", onSelect: () => resetOffsets(ids) });
     if (linked.length) items.push({ kind: "action", label: "拆掉連到上層的線", onSelect: () => detachEdges(linked) });
     if (nonRoot.length) items.push({ kind: "action", label: nonRoot.length > 1 ? `刪除 ${nonRoot.length} 個元件` : "刪除", hint: "Delete", danger: true, onSelect: removeSelected });
     return { title: one ? `元件「${oneLine(map.node(one)!.text)}」` : `${ids.length} 個元件`, items };
@@ -942,14 +978,14 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
                 <path key={ed.id} d={ed.d} fill="none" stroke={theme.accent} strokeOpacity={0.45} strokeWidth={ed.width + 8 / view.s} strokeLinecap="round" data-selected-edge={ed.id} />
               ))}
             </g>
-            <g ref={contentRef}>
-              <MindMapContent data={data} layout={shown} lifted={drag?.ids} editing={editing?.id} />
-            </g>
-            {/* 點選線條用的透明粗線（不會匯出） */}
+            {/* 點選線條用的透明粗線（不會匯出）：放在元件下面，線經過元件時按元件會選到元件 */}
             <g className="mm-hits">
               {edges.map((ed) => (
                 <path key={ed.id} d={ed.d} data-edge={ed.id} fill="none" stroke="transparent" strokeWidth={Math.max(12 / view.s, ed.width + 6)} pointerEvents="stroke" style={{ cursor: "pointer" }} />
               ))}
+            </g>
+            <g ref={contentRef}>
+              <MindMapContent data={data} layout={shown} lifted={drag?.ids} editing={editing?.id} />
             </g>
             {/* 拉線用的圓點：選取一個元件時出現在兩側（不會匯出） */}
             {!editing && !drag && sel.nodes.size === 1 && selected && shown.byId.has(selected) && (
