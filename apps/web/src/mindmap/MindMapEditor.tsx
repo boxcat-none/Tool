@@ -1,5 +1,6 @@
 import {
   dropTarget,
+  subtreeIds,
   MINDMAP_EXTENSION,
   moveNodes,
   neighbor,
@@ -43,6 +44,8 @@ import { metaOf, type MindMapStore } from "./store";
 
 const LOCAL = "this-device";
 const NEW_TEXT = "新元件";
+/** 排列獨立元件時上下的間距 */
+const ARRANGE_GAP = 20;
 const LONG_PRESS = 550;
 const COLORS: { label: string; value: string | null }[] = [
   { label: "預設", value: null },
@@ -317,21 +320,63 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
       for (const id of moved) for (const c of map.children(id)) if (!moved.has(c)) shiftBy(c, -1);
     });
 
-  /** 選取的元件回到自動排版的位置：子元件（沒選到的）留在原地 */
-  const resetOffsets = (ids: string[]) =>
+  /**
+   * 排列。only = 選取的元件（沒有 = 整張圖）：
+   *   有連線的元件回到自動排版的位置（只排選到的：沒選到的子元件留在原地）；
+   *   獨立元件（連同底下的元件）由上往下排成整齊的一列、左邊對齊。
+   *   整張圖：獨立元件排在中心元件那棵樹的右邊；只排選到的：排在它們原本範圍的左上角。
+   */
+  const arrange = (only?: string[]) =>
     act(() => {
-      const set = new Set(ids);
-      for (const id of ids) {
-        const old = map.offset(id);
-        if (!old) continue;
-        map.setOffset(id, null);
-        for (const c of map.children(id)) {
-          if (set.has(c)) continue;
-          const o = map.offset(c) ?? [0, 0];
-          map.setOffset(c, [o[0] + old[0], o[1] + old[1]]);
+      if (!only) map.clearOffsets();
+      else {
+        const set = new Set(only);
+        for (const id of only) {
+          const old = map.offset(id);
+          if (!old) continue;
+          map.setOffset(id, null);
+          for (const c of map.children(id)) {
+            if (set.has(c)) continue;
+            const o = map.offset(c) ?? [0, 0];
+            map.setOffset(c, [o[0] + old[0], o[1] + old[1]]);
+          }
         }
       }
+      const lay = prepare(map, structure, theme).layout;
+      const floats = (only ?? map.floatingIds()).filter((id) => map.isFloating(id) && lay.byId.has(id));
+      if (!floats.length) return;
+      const boxOf = (ids: Iterable<string>) => {
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        for (const id of ids) {
+          const n = lay.byId.get(id);
+          if (!n) continue;
+          x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y);
+          x1 = Math.max(x1, n.x + n.width); y1 = Math.max(y1, n.y + n.height);
+        }
+        return { x0, y0, x1, y1 };
+      };
+      const boxes = new Map(floats.map((id) => [id, boxOf(subtreeIds(lay, [id]))]));
+      let x: number, y: number;
+      if (!only) {
+        const inFloat = subtreeIds(lay, map.floatingIds());
+        const main = boxOf(lay.nodes.filter((n) => !inFloat.has(n.id)).map((n) => n.id));
+        x = main.x1 + 80;
+        y = main.y0;
+      } else {
+        x = Math.min(...[...boxes.values()].map((b) => b.x0));
+        y = Math.min(...[...boxes.values()].map((b) => b.y0));
+      }
+      // 依原本由上到下的順序
+      for (const id of [...floats].sort((a, b) => boxes.get(a)!.y0 - boxes.get(b)!.y0 || boxes.get(a)!.x0 - boxes.get(b)!.x0)) {
+        const b = boxes.get(id)!;
+        const p = lay.byId.get(id)!;
+        map.setAt(id, [x + (p.x - b.x0), y + (p.y - b.y0)]);
+        y += b.y1 - b.y0 + ARRANGE_GAP;
+      }
     });
+  /** 有沒有東西可以排列 */
+  const canArrange = (only?: string[]) =>
+    only ? only.some((id) => map.offset(id) || map.isFloating(id)) && (only.length > 1 || !!map.offset(only[0])) : map.hasOffsets() || map.floatingIds().length > 0;
 
   /** 刪掉線條：子元件（和它底下的元件）變成獨立元件，留在原地 */
   const detachEdges = (ids: string[]) => {
@@ -703,7 +748,8 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
       lastTap.current = null;
       startEdit(g.id);
     } else {
-      lastTap.current = { id: g.id, at: now };
+      // Shift 點選（加選）不算第一下
+      lastTap.current = e.shiftKey ? null : { id: g.id, at: now };
     }
   };
 
@@ -826,7 +872,7 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
           { kind: "separator" },
           { kind: "action", label: "整張圖置中", hint: "Ctrl+0", onSelect: fit },
           { kind: "action", label: "實際大小（100%）", onSelect: actualSize },
-          { kind: "action", label: "自動排列", disabled: !map.hasOffsets(), onSelect: () => act(() => map.clearOffsets()) },
+          { kind: "action", label: "自動排列", disabled: !canArrange(), onSelect: () => arrange() },
           { kind: "separator" },
           { kind: "choices", label: "結構", options: STRUCTURES.map((s) => ({ label: s.label, value: s.id })), value: structure, onSelect: (v) => setStructure(v as Structure) },
           { kind: "choices", label: "樣式", options: THEMES.map((t) => ({ label: t.label.slice(0, 1), value: t.id })), value: theme.id, onSelect: setTheme },
@@ -871,7 +917,7 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
     const linked = nonRoot.filter((id) => !map.isFloating(id));
     if (linked.length) items.push(...lineItems(linked));
     items.push({ kind: "separator" });
-    if (ids.some((id) => map.offset(id))) items.push({ kind: "action", label: "回到自動排版的位置", onSelect: () => resetOffsets(ids) });
+    if (canArrange(ids)) items.push({ kind: "action", label: ids.length > 1 ? `排列選取的 ${ids.length} 個元件` : "回到自動排版的位置", onSelect: () => arrange(ids) });
     if (linked.length) items.push({ kind: "action", label: "拆掉連到上層的線", onSelect: () => detachEdges(linked) });
     if (nonRoot.length) items.push({ kind: "action", label: nonRoot.length > 1 ? `刪除 ${nonRoot.length} 個元件` : "刪除", hint: "Delete", danger: true, onSelect: removeSelected });
     return { title: one ? `元件「${oneLine(map.node(one)!.text)}」` : `${ids.length} 個元件`, items };
@@ -880,6 +926,8 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
   // ── 畫面 ──────────────────────────────────────────
 
   const selNode = selected ? map.node(selected) : undefined;
+  /** 選了多個元件時，「自動排列」只排選到的 */
+  const multiIds = [...sel.nodes].filter((id) => layout.byId.has(id));
   const editingPlaced = editing ? layout.byId.get(editing.id) : undefined;
   const editStyle = editing ? data.styles.get(editing.id) : undefined;
   const menuData = menu ? menuItems() : null;
@@ -935,7 +983,13 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
           <span className="mm-zoom">{Math.round(view.s * 100)}%</span>
           <button type="button" className="mm-btn" onClick={() => zoomAt(1.2)} aria-label="放大">+</button>
           <button type="button" className="mm-btn" onClick={fit} title="整張圖置中（Ctrl+0）">置中</button>
-          <button type="button" className="mm-btn" disabled={!map.hasOffsets()} onClick={() => act(() => map.clearOffsets())} title="拖動過的元件回到自動排版的位置">
+          <button
+            type="button"
+            className="mm-btn"
+            disabled={!canArrange(multiIds.length > 1 ? multiIds : undefined)}
+            onClick={() => arrange(multiIds.length > 1 ? multiIds : undefined)}
+            title={multiIds.length > 1 ? "選取的元件回到自動排版的位置，獨立元件排整齊" : "整張圖回到自動排版的位置，獨立元件排整齊"}
+          >
             自動排列
           </button>
           <label className="mm-field">

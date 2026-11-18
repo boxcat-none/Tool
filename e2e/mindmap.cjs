@@ -213,7 +213,7 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   const emptyAt = async (m = 30) => {
     for (let y = cbox.y + m; y < cbox.y + cbox.height - m; y += 25)
       for (let x = cbox.x + m; x < cbox.x + cbox.width - m; x += 25)
-        if (await page.evaluate(([x, y]) => { const el = document.elementFromPoint(x, y); return !!el?.closest(".mm-canvas") && !el.closest("[data-node],[data-edge],[data-toggle],.mm-menu,.mm-hint"); }, [x, y])) return [x, y];
+        if (await page.evaluate(([x, y]) => { const el = document.elementFromPoint(x, y); return !!el?.closest(".mm-canvas") && !el.closest("[data-node],[data-edge],[data-toggle],[data-handle],.mm-menu,.mm-hint"); }, [x, y])) return [x, y];
     throw new Error("找不到空白處");
   };
   const tf = () => page.evaluate(() => document.querySelector(".mm-svg > g").getAttribute("transform"));
@@ -304,7 +304,7 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   // 右鍵點多選中的主題：一次改全部
   await page.mouse.click(...(await center(page, "營收")), { button: "right" });
   check(await page.locator(".mm-menu__title").textContent() === "2 個元件", "right-click inside a multi-selection keeps it", await page.locator(".mm-menu__title").textContent());
-  await page.getByRole("menuitem", { name: "回到自動排版的位置" }).click();
+  await page.getByRole("menuitem", { name: "排列選取的 2 個元件" }).click();
   check((await posOf("營收")).join() === a0.join() && (await posOf("時間表")).join() === b0.join(), "menu: back to auto layout position (both)");
   await page.keyboard.press("Escape");
 
@@ -385,8 +385,45 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   check(fPos1[0] !== fPos0[0] && (await edgeCount()) === e0, "standalone element can be dragged freely", [fPos0, fPos1]);
   await page.keyboard.press("Control+z");
   check((await posOf("獨立")).join() === fPos0.join(), "undo moves it back");
+
+  // ── 排列選取的元件：有連線的回到自動位置，獨立元件排成整齊的一列 ──
+  await page.keyboard.press("Escape");
+  [ex, ey] = await emptyAt(140);
+  await page.mouse.click(ex, ey, { button: "right" });
+  await page.getByRole("menuitem", { name: "新增元件" }).click();
+  await typeTopic(page, "獨立二");
+  await page.keyboard.press("Enter");
+  const tl0 = await posOf("時間表");
+  const [t1x, t1y] = await center(page, "時間表");
+  await page.keyboard.press("Escape");
+  await page.mouse.move(t1x, t1y); await page.mouse.down();
+  await page.mouse.move(t1x + 10, t1y + 10, { steps: 3 });
+  await page.mouse.move(t1x + 70, t1y + 90, { steps: 6 });
+  // 放到空白處（不要蓋住別的元件）
+  const [ox, oy] = await emptyAt(160);
+  await page.mouse.move(ox, oy, { steps: 6 });
+  await page.mouse.up();
+  check((await posOf("時間表")).join() !== tl0.join(), "moved an element away before arranging");
+  await page.getByRole("button", { name: "置中" }).click();
+  await node(page, "時間表").click();
+  await node(page, "獨立").click({ modifiers: ["Shift"] });
+  await node(page, "獨立二").click({ modifiers: ["Shift"] });
+  check((await page.locator("[data-multi]").count()) === 3, "three elements selected");
+  await page.getByRole("button", { name: "自動排列" }).click();
+  const fa = await node(page, "獨立").boundingBox(), fb = await node(page, "獨立二").boundingBox();
+  const [top, bottom] = fa.y < fb.y ? [fa, fb] : [fb, fa];
+  check((await posOf("時間表")).join() === tl0.join(), "arranging the selection puts the connected element back", [await posOf("時間表"), tl0]);
+  check(Math.abs(fa.x - fb.x) < 1 && bottom.y >= top.y + top.height, "…and lines up every selected standalone element in a column", [fa, fb]);
+  await page.keyboard.press("Control+z");
+  check((await posOf("時間表")).join() !== tl0.join() && (await posOf("獨立")).join() === fPos0.join(), "undo restores everything in one step");
+  await page.keyboard.press("Control+z");
+  check((await posOf("時間表")).join() === tl0.join(), "undo the drag too");
+  await page.keyboard.press("Escape");
+  await node(page, "獨立二").click();
   await page.keyboard.press("Delete");
-  check((await outline(page)) === mdBeforeFloat, "deleting the standalone element leaves the tree as before");
+  await node(page, "獨立").click();
+  await page.keyboard.press("Delete");
+  { const mdEnd = await outline(page); check(mdEnd === mdBeforeFloat, "deleting the standalone element leaves the tree as before", [mdEnd, mdBeforeFloat]); }
 
   // ── 收合、展開 ──
   await node(page, "目標").click();
