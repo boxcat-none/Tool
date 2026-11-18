@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 export LANG=C.UTF-8 LC_ALL=C.UTF-8 # 中文檔名下載時需要
 OUT=e2e/.out; mkdir -p "$OUT/logs"
 
-SUITES=(run run2 run3 reader reader2 ink notes ipad offline memory sync sync-big sync-live images ipad-images rotate lasso)
+SUITES=(run run2 run3 reader reader2 ink notes ipad offline memory sync sync-big sync-live images ipad-images rotate lasso mindmap)
 [ $# -gt 0 ] && SUITES=("$@")
 
 [ "${SKIP_BUILD:-}" = 1 ] || pnpm --filter @tool/web build >/dev/null || { echo "建置失敗"; exit 1; }
