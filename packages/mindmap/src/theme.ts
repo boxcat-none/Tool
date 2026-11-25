@@ -11,7 +11,7 @@ import type { TreeNode } from "./model";
  *   node     節點卡片：深色畫布、圓角深色卡片，左右有連接點，細的 S 形曲線從連接點拉出；中心主題是亮色標籤
  */
 
-export type NodeShape = "pill" | "rounded" | "rect" | "underline" | "ellipse" | "sticky" | "card" | "tag";
+export type NodeShape = "pill" | "rounded" | "rect" | "underline" | "ellipse" | "sticky" | "card" | "tag" | "diamond" | "parallelogram";
 
 export interface NodeStyle {
   shape: NodeShape;

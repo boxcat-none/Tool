@@ -310,6 +310,9 @@ export function edgePath(layout: Layout, parent: Placed, child: Placed, style: E
   return `M${r(sx)} ${r(sy)}C${r(mx)} ${r(sy)} ${r(mx)} ${r(ey)} ${r(ex)} ${r(ey)}`;
 }
 
+/** 往上連的線繞出去的 x（兩端右邊再往外 48） */
+export const backBulge = (sx: number, ex: number) => Math.max(sx, ex) + 48;
+
 /**
  * 手拉的連接線：從 a 朝向 b 的那一側連到 b 朝向 a 的那一側（組織圖用上下，其他結構用左右）。
  * 中心元件（深度 0）沒有連接點，線從邊上出來。
@@ -321,6 +324,14 @@ export function linkPath(layout: Layout, a: Placed, b: Placed, style: EdgeStyle,
   const inB = b.depth ? inset : 0;
   if (layout.structure === "org") {
     const down = b.y + b.height / 2 >= a.y + a.height / 2;
+    // 往上連（流程圖的迴圈）：從右邊繞出去再接回右邊，不和往下的線疊在一起
+    if (!down && style !== "straight") {
+      const sx = a.x + a.width, sy = a.y + a.height / 2;
+      const ex = b.x + b.width, ey = b.y + b.height / 2;
+      const bx = backBulge(sx, ex);
+      if (style === "elbow") return `M${r(sx)} ${r(sy)}H${r(bx)}V${r(ey)}H${r(ex)}`;
+      return `M${r(sx)} ${r(sy)}C${r(bx)} ${r(sy)} ${r(bx)} ${r(ey)} ${r(ex)} ${r(ey)}`;
+    }
     const sx = a.x + a.width / 2, ex = b.x + b.width / 2;
     const sy = down ? a.y + a.height - inA : a.y + inA;
     const ey = down ? b.y + inB : b.y + b.height - inB;

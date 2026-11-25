@@ -3,7 +3,7 @@
 用真的瀏覽器（Playwright + Chromium）和真的軟體版（Tauri + WebDriver）操作整個 app。單元測試在各 package 的 `test/`（`pnpm test`）。
 
 ```bash
-pnpm e2e                         # 網頁版全部（建置 → 啟動 preview :4173 → 18 組，約 15 分鐘）
+pnpm e2e                         # 網頁版全部（建置 → 啟動 preview :4173 → 19 組，約 15 分鐘）
 SKIP_BUILD=1 bash e2e/run-web.sh lasso images   # 只跑某幾組、不重新建置
 pnpm e2e:desktop                 # 軟體版（Linux；需要 xvfb-run、tauri-driver、WebKitWebDriver）
 ```
@@ -30,6 +30,7 @@ pnpm e2e:desktop                 # 軟體版（Linux；需要 xvfb-run、tauri-d
 | `sync` `sync-big` `sync-live` | 裝置連線（WebRTC）：配對、同步、斷線、合併、大檔傳輸、即時筆畫 |
 | `images` `rotate` `lasso` | 插入圖片、旋轉、套索選取 |
 | `mindmap` | 心智圖：鍵盤編輯、拖曳換位置、收合、復原、貼上大綱、結構與樣式、自動儲存、匯出與開啟檔案、iPad 觸控、iPhone 版面 |
+| `mindmap-ai` | 心智圖 AI 產生：攔截模擬自己的模型（OpenAI 相容 API）、測試連線、架構圖、流程圖（形狀、箭頭、是／否、分層排版、迴圈）、Mermaid 回答、不支援 JSON 模式時重試、Word／PowerPoint／HTML／PDF 轉文字、不用 AI 照標題轉換、圖片、錯誤訊息 |
 | `iphone-shots` | iPhone 尺寸截圖（人工看，不在預設清單） |
 | `desktop*` | 軟體版：Office 轉 PDF、原生存檔對話框（`VITE_E2E=1` 建置時由 `window.__e2e` 提供結果）、自動儲存 |
 

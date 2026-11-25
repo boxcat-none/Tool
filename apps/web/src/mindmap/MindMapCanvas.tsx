@@ -1,5 +1,6 @@
 import {
   branchColors,
+  backBulge,
   edgePath,
   layoutForest,
   lineWidthAt,
@@ -86,6 +87,12 @@ export function measureNode(text: string, style: NodeStyle, depth: number): { wi
   if (style.shape === "ellipse") {
     width = Math.ceil(width * 1.12);
     height = Math.ceil(height * 1.2);
+  } else if (style.shape === "diamond") {
+    // 菱形：文字要放得進中間，外框放大
+    width = Math.ceil(width * 1.45);
+    height = Math.ceil(height * 1.6);
+  } else if (style.shape === "parallelogram") {
+    width = Math.ceil(width + height * 0.6);
   }
   return { width, height };
 }
@@ -179,6 +186,22 @@ export interface EdgeInfo {
   /** 兩端點（框選、連接點用） */
   from: [number, number];
   to: [number, number];
+  /** 終點的箭頭（三角形的 path） */
+  arrowHead?: string;
+  /** 線上的文字與位置（線的中間） */
+  label?: string;
+  labelAt?: [number, number];
+}
+
+/** 箭頭：尖端在 tip，方向 (dx, dy) */
+function arrowPath(tip: [number, number], dx: number, dy: number, width: number): string {
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len, uy = dy / len;
+  const size = 7 + width * 1.6;
+  const bx = tip[0] - ux * size, by = tip[1] - uy * size;
+  const half = size * 0.55;
+  const r = (v: number) => Math.round(v * 10) / 10;
+  return `M${r(tip[0])} ${r(tip[1])}L${r(bx - uy * half)} ${r(by + ux * half)}L${r(bx + uy * half)} ${r(by - ux * half)}Z`;
 }
 
 /** 所有連接線（畫線、點選線條、框選共用） */
@@ -223,6 +246,18 @@ export function edgeList(data: CanvasData, layout: Layout = data.layout): EdgeIn
       d = d.replace(/-?\d+(\.\d+)?/g, (m) => String(Math.round(j(Number(m)) * 10) / 10));
     }
     const nums = d.match(/-?\d+(\.\d+)?/g)!.map(Number);
+    const from: [number, number] = [nums[0], nums[1]];
+    const to: [number, number] = [nums[nums.length - 2], nums[nums.length - 1]];
+    const width = l.width ?? lineWidthAt(theme, 2);
+    // 箭頭方向：直線照兩端；曲線、直角線最後一段是垂直（組織圖）或水平
+    const style = l.line ?? theme.edge;
+    const vertical = layout.structure === "org";
+    // 組織圖往上連的線從右邊繞回來：最後一段往左
+    const back = vertical && style !== "straight" && to[1] < from[1];
+    const dir: [number, number] = style === "straight" ? [to[0] - from[0], to[1] - from[1]] : back ? [-1, 0] : vertical ? [0, Math.sign(to[1] - from[1]) || 1] : [Math.sign(to[0] - from[0]) || 1, 0];
+    // 文字放在線的中間（繞出去的線：在繞出去的那一段）
+    const bx = backBulge(from[0], to[0]);
+    const labelAt: [number, number] = back ? [style === "elbow" ? bx : (from[0] + 6 * bx + to[0]) / 8, (from[1] + to[1]) / 2] : [(from[0] + to[0]) / 2, (from[1] + to[1]) / 2];
     out.push({
       id: LINK_PREFIX + l.id,
       parent: l.from,
@@ -230,10 +265,12 @@ export function edgeList(data: CanvasData, layout: Layout = data.layout): EdgeIn
       link: true,
       d,
       color: l.color ?? custom.get(l.from) ?? theme.lineColor,
-      width: l.width ?? lineWidthAt(theme, 2),
+      width,
       dash: !!l.dash,
-      from: [nums[0], nums[1]],
-      to: [nums[nums.length - 2], nums[nums.length - 1]],
+      from,
+      to,
+      ...(l.arrow ? { arrowHead: arrowPath(to, dir[0], dir[1], width) } : {}),
+      ...(l.label ? { label: l.label, labelAt } : {}),
     });
   }
   return out;
@@ -256,11 +293,15 @@ export function MindMapContent({ data, layout = data.layout, lifted, editing }: 
         {edges.map((e) => (
           <path key={e.id} d={e.d} fill="none" stroke={e.color} strokeWidth={e.width} strokeLinecap="round" strokeDasharray={e.dash ? `${e.width * 3} ${e.width * 2.5}` : undefined} />
         ))}
+        {edges.map((e) => e.arrowHead && <path key={`a${e.id}`} d={e.arrowHead} fill={e.color} stroke={e.color} strokeWidth={1} strokeLinejoin="round" data-arrow={e.id} />)}
       </g>
       <g className="mm-nodes">
         {order.map((n) => (
           <NodeShape key={n.id} placed={n} node={nodes.get(n.id)!} style={styles.get(n.id)!} theme={theme} inset={inset} portColor={custom.get(n.id) ?? theme.port} ghost={lifted?.has(n.id)} hideText={n.id === editing} structure={layout.structure} />
         ))}
+      </g>
+      <g className="mm-labels">
+        {edges.map((e) => e.label && e.labelAt && <EdgeLabel key={`l${e.id}`} id={e.id} text={e.label} at={e.labelAt} theme={theme} />)}
       </g>
       {theme.port && (
         <g className="mm-ports">
@@ -324,6 +365,16 @@ export function NodeShape({
     case "ellipse":
       shape = <ellipse cx={w / 2} cy={h / 2} rx={w / 2} ry={h / 2} fill={fill} stroke={stroke} strokeWidth={st.strokeWidth} />;
       break;
+    case "diamond":
+      // 流程圖的判斷
+      shape = <path d={`M${w / 2} 0L${w} ${h / 2}L${w / 2} ${h}L0 ${h / 2}Z`} fill={fill} stroke={stroke ?? (st.fill === "none" ? undefined : st.fill)} strokeWidth={st.strokeWidth || 1} strokeLinejoin="round" />;
+      break;
+    case "parallelogram": {
+      // 流程圖的輸入／輸出
+      const k = h * 0.3;
+      shape = <path d={`M${k} 0H${w}L${w - k} ${h}H0Z`} fill={fill} stroke={stroke} strokeWidth={st.strokeWidth} strokeLinejoin="round" />;
+      break;
+    }
     case "sticky":
       shape = <rect width={w} height={h} rx={3} fill={fill} transform={`rotate(${stickyTilt(n.id)} ${w / 2} ${h / 2})`} />;
       break;
@@ -379,4 +430,25 @@ export function NodeShape({
       </g>
     );
   }
+}
+
+/** 線上的文字：底下墊一塊背景色，線穿過也看得清楚 */
+function EdgeLabel({ id, text, at, theme }: { id: string; text: string; at: [number, number]; theme: Theme }) {
+  const style: NodeStyle = { ...theme.style(2, theme.palette[0]), fontSize: 12, fontWeight: 500 };
+  const { lines, width } = wrapLines(text, style);
+  const lh = 12 * LINE_HEIGHT;
+  const w = width + 10, h = lines.length * lh + 4;
+  const color = isDark(theme.background) ? "#e9e7ee" : "#343a40";
+  return (
+    <g data-edge-label={id} transform={`translate(${at[0] - w / 2} ${at[1] - h / 2})`}>
+      <rect width={w} height={h} rx={4} fill={theme.background} opacity={0.92} />
+      <text fill={color} fontSize={12} fontWeight={500} fontFamily={FONT} textAnchor="middle">
+        {lines.map((line, i) => (
+          <tspan key={i} x={w / 2} y={2 + lh * (i + 0.5)} dominantBaseline="central">
+            {line}
+          </tspan>
+        ))}
+      </text>
+    </g>
+  );
 }

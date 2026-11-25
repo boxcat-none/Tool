@@ -303,3 +303,17 @@ describe("linkPath（手拉的線）", () => {
     expect(v[3]).toBeCloseTo(b.y);
   });
 });
+
+describe("linkPath 往上連（流程圖迴圈）", () => {
+  it("組織圖往上連的線從右邊繞出去再接回右邊；直線照舊", () => {
+    const l = layoutTree(MindMap.create("x").tree(), measure, "org");
+    const a = { ...l.byId.get(l.nodes[0].id)!, id: "a", x: 0, y: 200 };
+    const b = { ...a, id: "b", x: 0, y: 0 };
+    const d = linkPath(l, a, b, "curve");
+    const nums = d.match(/-?\d+(\.\d+)?/g)!.map(Number);
+    expect(nums[0]).toBe(a.x + a.width);
+    expect(nums[2]).toBeGreaterThan(a.x + a.width);
+    expect(nums[nums.length - 2]).toBe(b.x + b.width);
+    expect(linkPath(l, a, b, "straight").startsWith(`M${a.x + a.width / 2} ${a.y}`)).toBe(true);
+  });
+});

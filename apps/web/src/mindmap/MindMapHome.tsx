@@ -1,5 +1,6 @@
 import { IMPORT_EXTENSIONS, MindMap, openAnyMindMapFile } from "@tool/mindmap";
 import { useEffect, useRef, useState } from "react";
+import { AiDialog } from "./ai/AiDialog";
 import { MindMapEditor } from "./MindMapEditor";
 import { openMindMapStore, type MindMapMeta, type MindMapStore, type OpenedMindMap } from "./store";
 import "./mindmap.css";
@@ -11,6 +12,7 @@ export default function MindMapHome() {
   const [opened, setOpened] = useState<(OpenedMindMap & { createdAt: number }) | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const [aiOpen, setAiOpen] = useState(false);
 
   const refresh = async (s = store) => {
     if (s) setList(await s.list());
@@ -64,6 +66,14 @@ export default function MindMapHome() {
     }
   };
 
+  /** AI 產生的圖：存起來並打開 */
+  const createFrom = async (map: MindMap) => {
+    if (!store) return;
+    const o = await store.add(map);
+    setAiOpen(false);
+    setOpened({ ...o, createdAt: Date.now() });
+  };
+
   const remove = async (meta: MindMapMeta) => {
     if (!store || !confirm(`刪除「${meta.title}」？刪除後無法復原。`)) return;
     await store.remove(meta.id);
@@ -91,6 +101,7 @@ export default function MindMapHome() {
       <div className="mm-home__actions">
         <button type="button" className="btn btn--primary" onClick={() => void create()} disabled={!store}>新增心智圖</button>
         <button type="button" className="btn" onClick={() => fileInput.current?.click()} disabled={!store}>開啟檔案</button>
+        <button type="button" className="btn" onClick={() => setAiOpen(true)} disabled={!store}>AI 產生…</button>
         <input
           ref={fileInput}
           type="file"
@@ -120,6 +131,7 @@ export default function MindMapHome() {
       ) : (
         store && <p className="mm-empty">還沒有心智圖。按「新增心智圖」開始。</p>
       )}
+      {aiOpen && <AiDialog onCreate={createFrom} onClose={() => setAiOpen(false)} />}
     </main>
   );
 }

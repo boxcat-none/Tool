@@ -168,11 +168,12 @@ export function parseFreeMind(text: string, fallbackTitle: string): ImportedMap 
 }
 
 /**
+ * paragraphs = 一般段落也變成元件（「不用 AI」照文件轉換時用；開 .md 檔時只看標題與清單）。
  * Markdown：第一個 # 標題 = 中心元件；## = 第一層、### = 第二層…；
  * 清單項目放在最近的標題底下，縮排再往下一層。之後再出現的 # 標題 = 獨立元件（和匯出的格式一樣）。
  * 沒有 # 標題時，以檔名當中心元件。
  */
-export function parseMarkdown(text: string, fallbackTitle: string): ImportedMap {
+export function parseMarkdown(text: string, fallbackTitle: string, opts: { paragraphs?: boolean } = {}): ImportedMap {
   const lines = text.replace(/\r/g, "").split("\n");
   const tops: OutlineNode[] = [];
   // stack[i] = 第 i 層最後一個節點（第 0 層 = 目前的 # 標題）
@@ -223,7 +224,21 @@ export function parseMarkdown(text: string, fallbackTitle: string): ImportedMap 
     }
     if (/^\s*([-*+•]|\d+[.)])\s+/.test(raw)) listBuf.push(raw.replace(/^(\s*)([-*+•]|\d+[.)])\s+/, (_m, sp) => `${sp}- `).replace(/- (.*)$/, (_m, t) => `- ${stripInline(t)}`));
     else if (raw.trim() && listBuf.length && /^\s+/.test(raw)) continue; // 清單項目的續行：略過
-    else flushList();
+    else {
+      flushList();
+      // 一般段落：paragraphs 時放在目前的標題底下（太長的截短），沒有清單的文件也看得到內容
+      const t = stripInline(raw);
+      if (opts.paragraphs && t) {
+        if (!stack.length) {
+          const holder: OutlineNode = { text: fallbackTitle, children: [] };
+          tops.push(holder);
+          stack = [holder];
+          headingDepth = 0;
+        }
+        stack[headingDepth].children.push({ text: t.length > 60 ? `${t.slice(0, 60)}…` : t, children: [] });
+        stack = stack.slice(0, headingDepth + 1);
+      }
+    }
   }
   flushList();
   if (!tops.length) throw new Error("這個 Markdown 檔沒有標題或清單，讀不到內容");
