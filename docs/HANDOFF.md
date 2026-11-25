@@ -30,7 +30,9 @@ iPad／iPhone 用網頁版。目標是多台裝置（iPad＋電腦）即時協�
 | W7–W8 | 區網連線技術驗證（WebRTC，手動連線碼）、同步協定、即時顯示對方正在畫的筆畫 | ✅ 測試版 |
 | W9–W11 | 正式協作：配對方式、斷線自動重連 | ⛔ **等使用者決定 backlog #19** |
 | W12–W13 | 插入圖片、圖片旋轉、套索選取、iPhone 版面 | ✅ |
-| W14+ | 雲端同步、App Store（選做） | 未開始 |
+| W14 | backlog #20：複製貼上、圖片上下順序、套索縮放旋轉 | PR #14（等使用者說「合併」） |
+| 心智圖 | 獨立開發（使用者要求先不和筆記合併）：四種結構、五種樣式、編輯、匯出 | 第一版，分支 `claude/mindmap`；見 `docs/mindmap.md` |
+| W15+ | 雲端同步、App Store（選做） | 未開始 |
 
 ## 下一步
 
@@ -50,8 +52,9 @@ iPad／iPhone 用網頁版。目標是多台裝置（iPad＋電腦）即時協�
 
 1. 處理使用者的實機測試回饋（iPad、Windows）——永遠優先。
 2. backlog #20：複製貼上（筆跡、圖片）、圖片上下順序、套索縮放／旋轉筆跡。
-3. backlog #14：匯出時設定 PDF 密碼（@cantoo/pdf-lib 已支援加密）。
-4. backlog #11：書櫃封面縮圖、排序、搜尋、資料夾。
+3. 心智圖：使用者實機試用後的回饋、backlog #24 裡使用者想先要的功能；完成後和筆記合併（#23）。
+4. backlog #14：匯出時設定 PDF 密碼（@cantoo/pdf-lib 已支援加密）。
+5. backlog #11：書櫃封面縮圖、排序、搜尋、資料夾。
 
 完成條件：功能＋測試＋文件＋回歸全綠＋PR 開好並回報，等使用者說「合併」。
 
@@ -70,6 +73,7 @@ iPad／iPhone 用網頁版。目標是多台裝置（iPad＋電腦）即時協�
 | Service Worker、pdf.js 資源複製 | `apps/web/vite.config.ts`、`apps/web/src/sw-template.js` | — |
 | 軟體版（存檔對話框、LibreOffice 轉檔） | `apps/desktop/src-tauri/src/` | `README.md` |
 | CI、Pages 部署、安裝檔打包 | `.github/workflows/ci.yml` `desktop.yml` | `README.md` |
+| 心智圖（模型、排版、樣式、編輯畫面） | `packages/mindmap/src/`、`apps/web/src/mindmap/` | `docs/mindmap.md` |
 | 效能量測 | `packages/notes/bench/`、`e2e/stress.cjs` | `docs/w5-performance.md` |
 
 ## 容易踩的坑

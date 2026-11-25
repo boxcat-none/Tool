@@ -29,13 +29,16 @@ type ToolId = (typeof ALL_TOOLS)[number]["id"];
 
 /** 閱讀器（含 pdf.js 閱讀器元件）延遲載入，只用工具時不需要下載 */
 const Reader = lazy(() => import("./reader/Reader"));
+/** 心智圖（獨立開發中，之後再和筆記整合）也延遲載入 */
+const MindMapHome = lazy(() => import("./mindmap/MindMapHome"));
 
-type Route = { mode: "reader" } | { mode: "tools"; tool: ToolId };
+type Route = { mode: "reader" } | { mode: "mindmap" } | { mode: "tools"; tool: ToolId };
 
 /** 預設進入「閱讀與筆記」；網址是工具代號（例如 #merge）時進入該工具 */
 function currentRoute(): Route {
   const hash = location.hash.slice(1);
   if (TOOLS.some((t) => t.id === hash)) return { mode: "tools", tool: hash as ToolId };
+  if (hash === "mindmap") return { mode: "mindmap" };
   return { mode: "reader" };
 }
 
@@ -56,18 +59,20 @@ export function App() {
 
   useEffect(() => {
     if (route.mode === "reader") setReaderMounted(true);
-    else setLastTool(route.tool);
+    else if (route.mode === "tools") setLastTool(route.tool);
   }, [route]);
 
   const go = (next: Route) => {
     setRoute(next);
-    history.replaceState(null, "", `#${next.mode === "reader" ? "reader" : next.tool}`);
+    history.replaceState(null, "", `#${next.mode === "tools" ? next.tool : next.mode}`);
   };
 
   const reading = route.mode === "reader";
+  const mapping = route.mode === "mindmap";
+  const tooling = route.mode === "tools";
 
   return (
-    <div className={`app${reading ? " app--reader" : ""}`}>
+    <div className={`app${reading || mapping ? " app--reader" : ""}`}>
       <header className="header">
         <div className="brand">
           <img src="./favicon.svg" alt="" width={28} height={28} />
@@ -77,7 +82,10 @@ export function App() {
           <button type="button" className={`mode-btn${reading ? " mode-btn--active" : ""}`} aria-current={reading ? "page" : undefined} onClick={() => go({ mode: "reader" })}>
             閱讀與筆記
           </button>
-          <button type="button" className={`mode-btn${!reading ? " mode-btn--active" : ""}`} aria-current={!reading ? "page" : undefined} onClick={() => go({ mode: "tools", tool: lastTool })}>
+          <button type="button" className={`mode-btn${mapping ? " mode-btn--active" : ""}`} aria-current={mapping ? "page" : undefined} onClick={() => go({ mode: "mindmap" })}>
+            心智圖
+          </button>
+          <button type="button" className={`mode-btn${tooling ? " mode-btn--active" : ""}`} aria-current={tooling ? "page" : undefined} onClick={() => go({ mode: "tools", tool: lastTool })}>
             PDF 工具
           </button>
         </nav>
@@ -95,7 +103,15 @@ export function App() {
         </div>
       )}
 
-      {!reading && (
+      {mapping && (
+        <div className="mm-host">
+          <Suspense fallback={<div className="reader__overlay"><span className="spinner" aria-hidden="true" /></div>}>
+            <MindMapHome />
+          </Suspense>
+        </div>
+      )}
+
+      {tooling && (
       <>
       <nav className="tabs" role="tablist" aria-label="工具">
         {TOOLS.map((t) => (

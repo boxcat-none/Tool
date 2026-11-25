@@ -1,0 +1,608 @@
+import { generateKeyBetween } from "fractional-indexing";
+import * as Y from "yjs";
+
+/**
+ * 心智圖資料模型（Yjs 文件）。和筆記本一樣用 Yjs，之後才能在多台裝置之間同步、合併。
+ *
+ *   meta   Y.Map  { schema, id, title, root, structure, theme, createdAt }
+ *   nodes  Y.Map  nodeId → Y.Map { parent, order, text, collapsed?, color?, pos?, style?, at? }
+ *
+ *   links  Y.Map  linkId → { from, to, line?, width?, dash?, color? }   手拉的連接線
+ *
+ * 手拉的連接線和「上層 → 子元件」的線分開存：拉線不會改變元件原本的上層，也不會斷掉原本的線；
+ * 任兩個元件都可以連（包括中心元件），一個元件可以有很多條線。
+ *
+ * 獨立元件 = parent 是 null 的元件（中心元件以外）：沒有連到任何元件，位置記在 at = [x, y]（左上角，畫面座標）。
+ * 從元件拉線連到獨立元件，它就變成那個元件的子元件；刪掉連接線，子元件變回獨立元件。
+ *
+ * style = 這個主題自己的外觀設定（形狀、連到父主題的線型、粗細、虛線），沒設定的沿用主題樣式。
+ *
+ * pos = 使用者自由拖動後的位移 { 結構: [dx, dy] }（相對於自動排版的位置，子節點跟著移動）。
+ * 每種結構各自記錄：在心智圖裡拖過的位置不會影響組織圖。
+ *
+ * 每個節點只記「父節點」和「在兄弟之間的順序」（fractional indexing），
+ * 所以兩台裝置同時把同一個節點拖到不同位置時，只有最後一次生效，不會出現兩份。
+ *
+ * 兩台裝置同時做「把 A 拖到 B 底下」和「把 B 拖到 A 底下」會形成迴圈；
+ * 讀取時遇到迴圈或父節點已被刪除，就把該節點接到中心主題下（所有裝置結果一致），資料不會遺失。
+ */
+
+export const MINDMAP_SCHEMA = 1;
+
+/** 版面結構 */
+export type Structure = "mindmap" | "logic" | "org" | "tree";
+export const STRUCTURES: { id: Structure; label: string }[] = [
+  { id: "mindmap", label: "心智圖" },
+  { id: "logic", label: "邏輯圖" },
+  { id: "org", label: "組織圖" },
+  { id: "tree", label: "樹狀圖" },
+];
+
+export interface MindNode {
+  id: string;
+  parent: string | null;
+  text: string;
+  collapsed: boolean;
+  /** 自訂分支顏色（#rrggbb），子節點跟著用；沒有時用主題的顏色 */
+  color?: string;
+}
+
+export type Offset = [dx: number, dy: number];
+
+/** 單一主題的外觀設定（覆蓋樣式主題的預設） */
+export interface NodeOverride {
+  shape?: "rounded" | "pill" | "rect" | "card" | "ellipse" | "underline";
+  /** 連到父主題的線 */
+  line?: "curve" | "elbow" | "straight";
+  /** 線寬（px） */
+  width?: number;
+  dash?: boolean;
+}
+
+/** 排版用的樹（已排序、已處理迴圈；收合的節點沒有 children） */
+export interface TreeNode extends MindNode {
+  children: TreeNode[];
+  /** 收合時底下有幾個節點（畫「+3」用） */
+  hidden: number;
+  /** 目前結構下自由拖動的位移（沒有拖過 = undefined） */
+  offset?: Offset;
+  /** 這個主題自己的外觀設定 */
+  style?: NodeOverride;
+}
+
+/** 手拉的連接線 */
+export interface MindLink {
+  id: string;
+  from: string;
+  to: string;
+  line?: "curve" | "elbow" | "straight";
+  width?: number;
+  dash?: boolean;
+  color?: string;
+}
+
+export type LinkStyle = Omit<MindLink, "id" | "from" | "to">;
+
+export class MindMap {
+  readonly doc: Y.Doc;
+  private readonly meta: Y.Map<unknown>;
+  private readonly nodes: Y.Map<Y.Map<unknown>>;
+  /** order = 建立順序（fractional indexing），讀取時不帶出 */
+  private readonly linkMap: Y.Map<Omit<MindLink, "id"> & { order?: string }>;
+
+  constructor(doc: Y.Doc = new Y.Doc()) {
+    this.doc = doc;
+    this.meta = doc.getMap("meta");
+    this.nodes = doc.getMap("nodes");
+    this.linkMap = doc.getMap("links");
+  }
+
+  // ── 手拉的連接線 ──────────────────────────────────
+
+  /** 所有手拉的連接線（兩端都還在的；依建立順序） */
+  links(): MindLink[] {
+    const out: (MindLink & { order: string })[] = [];
+    for (const [id, l] of this.linkMap) if (this.nodes.has(l.from) && this.nodes.has(l.to)) out.push({ ...l, id, order: l.order ?? "" });
+    out.sort((a, b) => (a.order < b.order ? -1 : a.order > b.order ? 1 : a.id < b.id ? -1 : 1));
+    return out.map(({ order: _order, ...l }) => l);
+  }
+
+  link(id: string): MindLink | undefined {
+    const l = this.linkMap.get(id);
+    if (!l) return undefined;
+    const { order: _order, ...rest } = l;
+    return { ...rest, id };
+  }
+
+  /** 兩個元件之間已經有線（手拉的、或上層 → 子元件的），哪個方向都算 */
+  connected(a: string, b: string): boolean {
+    if (this.effectiveParent(a) === b || this.effectiveParent(b) === a) return true;
+    return this.links().some((l) => (l.from === a && l.to === b) || (l.from === b && l.to === a));
+  }
+
+  /** 可以從 from 拉線到 to：不同的兩個元件、都存在、之間還沒有線 */
+  canLink(from: string, to: string): boolean {
+    return from !== to && this.nodes.has(from) && this.nodes.has(to) && !this.connected(from, to);
+  }
+
+  /** 拉一條線（不改變任何元件的上層）；不能連時回傳 null */
+  addLink(from: string, to: string): string | null {
+    if (!this.canLink(from, to)) return null;
+    const id = newId();
+    let last: string | null = null;
+    for (const l of this.linkMap.values()) if (l.order && (last === null || l.order > last)) last = l.order;
+    this.linkMap.set(id, { from, to, order: generateKeyBetween(last, null) });
+    return id;
+  }
+
+  removeLink(ids: Iterable<string>): void {
+    this.doc.transact(() => {
+      for (const id of ids) this.linkMap.delete(id);
+    });
+  }
+
+  /** 修改線的樣式：欄位設成 null = 回到預設 */
+  setLinkStyle(ids: Iterable<string>, patch: { [K in keyof LinkStyle]?: LinkStyle[K] | null }): void {
+    this.doc.transact(() => {
+      for (const id of ids) {
+        const l = this.linkMap.get(id);
+        if (!l) continue;
+        const next: Record<string, unknown> = { ...l };
+        for (const [k, v] of Object.entries(patch)) {
+          if (v === null || v === undefined || v === false) delete next[k];
+          else next[k] = v;
+        }
+        this.linkMap.set(id, next as Omit<MindLink, "id">);
+      }
+    });
+  }
+
+  static create(title: string, rootText = title): MindMap {
+    const map = new MindMap();
+    map.doc.transact(() => {
+      const root = newId();
+      map.meta.set("schema", MINDMAP_SCHEMA);
+      map.meta.set("id", newId());
+      map.meta.set("title", title);
+      map.meta.set("root", root);
+      map.meta.set("structure", "mindmap");
+      map.meta.set("theme", "node");
+      map.meta.set("createdAt", Date.now());
+      const m = new Y.Map<unknown>();
+      m.set("parent", null);
+      m.set("order", "a0");
+      m.set("text", rootText);
+      map.nodes.set(root, m);
+    });
+    return map;
+  }
+
+  get id(): string {
+    return (this.meta.get("id") as string) ?? "";
+  }
+
+  get rootId(): string {
+    return (this.meta.get("root") as string) ?? "";
+  }
+
+  get title(): string {
+    return (this.meta.get("title") as string) ?? "";
+  }
+
+  set title(v: string) {
+    this.meta.set("title", v);
+  }
+
+  get structure(): Structure {
+    return ((this.meta.get("structure") as Structure) ?? "mindmap");
+  }
+
+  set structure(v: Structure) {
+    this.meta.set("structure", v);
+  }
+
+  get theme(): string {
+    return (this.meta.get("theme") as string) ?? "node";
+  }
+
+  set theme(v: string) {
+    this.meta.set("theme", v);
+  }
+
+  get size(): number {
+    return this.nodes.size;
+  }
+
+  has(id: string): boolean {
+    return this.nodes.has(id);
+  }
+
+  node(id: string): MindNode | undefined {
+    const m = this.nodes.get(id);
+    if (!m) return undefined;
+    const color = m.get("color") as string | undefined;
+    return {
+      id,
+      parent: this.effectiveParent(id),
+      text: (m.get("text") as string) ?? "",
+      collapsed: !!m.get("collapsed"),
+      ...(color ? { color } : {}),
+    };
+  }
+
+  /** 獨立元件（沒有連到任何元件）：依建立順序 */
+  floatingIds(): string[] {
+    const out: { id: string; order: string }[] = [];
+    for (const [id, m] of this.nodes) if (id !== this.rootId && this.isFloating(id)) out.push({ id, order: (m.get("order") as string) ?? "" });
+    out.sort((a, b) => (a.order < b.order ? -1 : a.order > b.order ? 1 : a.id < b.id ? -1 : 1));
+    return out.map((f) => f.id);
+  }
+
+  isFloating(id: string): boolean {
+    const m = this.nodes.get(id);
+    return !!m && id !== this.rootId && m.get("parent") === null;
+  }
+
+  /** 獨立元件的位置（左上角） */
+  at(id: string): Offset | undefined {
+    return this.nodes.get(id)?.get("at") as Offset | undefined;
+  }
+
+  setAt(id: string, at: Offset): void {
+    if (this.isFloating(id)) this.nodes.get(id)!.set("at", [round1(at[0]), round1(at[1])]);
+  }
+
+  /** 新增獨立元件（不連到任何元件） */
+  addFloating(text: string, at: Offset): string {
+    const id = newId();
+    this.doc.transact(() => {
+      const m = new Y.Map<unknown>();
+      m.set("parent", null);
+      const last = this.floatingIds().pop();
+      m.set("order", generateKeyBetween(last ? ((this.nodes.get(last)!.get("order") as string) || null) : null, null));
+      m.set("text", text);
+      m.set("at", [round1(at[0]), round1(at[1])]);
+      this.nodes.set(id, m);
+    });
+    return id;
+  }
+
+  /** 拆掉連到上層的線：元件（和它底下的元件）變成獨立元件，放在 at */
+  detach(id: string, at: Offset): boolean {
+    const m = this.nodes.get(id);
+    if (!m || id === this.rootId || this.isFloating(id)) return false;
+    this.doc.transact(() => {
+      m.set("parent", null);
+      m.set("order", generateKeyBetween(this.floatingIds().map((f) => (this.nodes.get(f)!.get("order") as string) || null).pop() ?? null, null));
+      m.set("at", [round1(at[0]), round1(at[1])]);
+      if (m.has("pos")) m.delete("pos");
+    });
+    return true;
+  }
+
+  /** 子節點（依順序） */
+  children(id: string): string[] {
+    return this.childIndex().get(id) ?? [];
+  }
+
+  /** 父節點（處理過迴圈與遺失的父節點；中心主題回傳 null） */
+  parentOf(id: string): string | null {
+    return this.effectiveParent(id);
+  }
+
+  /** 從中心主題到這個節點的深度（中心主題 = 0） */
+  depth(id: string): number {
+    let d = 0;
+    for (let p = this.effectiveParent(id); p; p = this.effectiveParent(p)) d++;
+    return d;
+  }
+
+  isAncestor(ancestor: string, id: string): boolean {
+    for (let p = this.effectiveParent(id); p; p = this.effectiveParent(p)) if (p === ancestor) return true;
+    return false;
+  }
+
+  /** 在 `parent` 底下第 `index` 個位置（預設最後）新增節點，回傳代號 */
+  addChild(parent: string, text = "", index?: number): string {
+    if (!this.nodes.has(parent)) throw new Error(`節點不存在：${parent}`);
+    const id = newId();
+    this.doc.transact(() => {
+      const m = new Y.Map<unknown>();
+      m.set("parent", parent);
+      m.set("order", this.orderAt(parent, index ?? Infinity));
+      m.set("text", text);
+      this.nodes.set(id, m);
+      // 在收合的節點底下新增：展開，才看得到新節點
+      this.nodes.get(parent)!.delete("collapsed");
+    });
+    return id;
+  }
+
+  /** 在某個節點的後面（或前面）新增同層節點；中心主題沒有同層，改為新增子節點 */
+  addSibling(id: string, text = "", before = false): string {
+    const parent = this.effectiveParent(id);
+    if (!parent) return this.addChild(id, text);
+    const index = this.children(parent).indexOf(id);
+    return this.addChild(parent, text, before ? index : index + 1);
+  }
+
+  setText(id: string, text: string): void {
+    this.nodes.get(id)?.set("text", text);
+  }
+
+  setCollapsed(id: string, collapsed: boolean): void {
+    const m = this.nodes.get(id);
+    if (!m) return;
+    if (collapsed) m.set("collapsed", true);
+    else m.delete("collapsed");
+  }
+
+  setColor(id: string, color: string | null): void {
+    const m = this.nodes.get(id);
+    if (!m) return;
+    if (color) m.set("color", color);
+    else m.delete("color");
+  }
+
+  /** 自由拖動後的位移（某個結構下）；沒有拖過回傳 undefined */
+  offset(id: string, structure: Structure = this.structure): Offset | undefined {
+    const pos = this.nodes.get(id)?.get("pos") as Partial<Record<Structure, Offset>> | undefined;
+    return pos?.[structure];
+  }
+
+  /** 設定自由拖動的位移（null = 回到自動排版的位置） */
+  setOffset(id: string, offset: Offset | null, structure: Structure = this.structure): void {
+    const m = this.nodes.get(id);
+    if (!m) return;
+    const pos = { ...((m.get("pos") as Partial<Record<Structure, Offset>> | undefined) ?? {}) };
+    if (offset && (offset[0] || offset[1])) pos[structure] = [round1(offset[0]), round1(offset[1])];
+    else delete pos[structure];
+    if (Object.keys(pos).length) m.set("pos", pos);
+    else if (m.has("pos")) m.delete("pos");
+  }
+
+  /** 自動排列：清掉某個結構下所有自由拖動的位移 */
+  clearOffsets(structure: Structure = this.structure): void {
+    this.doc.transact(() => {
+      for (const id of this.nodes.keys()) if (this.offset(id, structure)) this.setOffset(id, null, structure);
+    });
+  }
+
+  /** 有沒有自由拖動過的節點 */
+  hasOffsets(structure: Structure = this.structure): boolean {
+    for (const id of this.nodes.keys()) if (this.offset(id, structure)) return true;
+    return false;
+  }
+
+  /** 這個主題自己的外觀設定（沒有 = undefined） */
+  nodeStyle(id: string): NodeOverride | undefined {
+    const s = this.nodes.get(id)?.get("style") as NodeOverride | undefined;
+    return s && Object.keys(s).length ? s : undefined;
+  }
+
+  /** 修改外觀設定：patch 裡的欄位設成 null = 回到樣式主題的預設 */
+  setNodeStyle(ids: Iterable<string>, patch: { [K in keyof NodeOverride]?: NodeOverride[K] | null }): void {
+    this.doc.transact(() => {
+      for (const id of ids) {
+        const m = this.nodes.get(id);
+        if (!m) continue;
+        const next: Record<string, unknown> = { ...((m.get("style") as NodeOverride | undefined) ?? {}) };
+        for (const [k, v] of Object.entries(patch)) {
+          if (v === null || v === undefined || v === false) delete next[k];
+          else next[k] = v;
+        }
+        if (Object.keys(next).length) m.set("style", next);
+        else if (m.has("style")) m.delete("style");
+      }
+    });
+  }
+
+  /** 刪除節點與它底下所有節點（中心主題不能刪） */
+  remove(ids: Iterable<string>): void {
+    const index = this.childIndex();
+    this.doc.transact(() => {
+      for (const id of ids) {
+        if (id === this.rootId || !this.nodes.has(id)) continue;
+        const stack = [id];
+        while (stack.length) {
+          const cur = stack.pop()!;
+          stack.push(...(index.get(cur) ?? []));
+          this.nodes.delete(cur);
+        }
+      }
+      // 連到被刪掉元件的手拉線一起刪
+      for (const [lid, l] of [...this.linkMap]) if (!this.nodes.has(l.from) || !this.nodes.has(l.to)) this.linkMap.delete(lid);
+    });
+  }
+
+  /**
+   * 把節點移到 `parent` 底下第 `index` 個位置（以移動後的順序計算）。
+   * 不能移到自己或自己的子孫底下；中心主題不能移動。回傳是否移動了。
+   */
+  move(id: string, parent: string, index = Infinity): boolean {
+    const m = this.nodes.get(id);
+    if (!m || id === this.rootId || !this.nodes.has(parent)) return false;
+    if (parent === id || this.isAncestor(id, parent)) return false;
+    this.doc.transact(() => {
+      m.set("order", this.orderAt(parent, index, id));
+      if (m.get("parent") !== parent) {
+        m.set("parent", parent);
+        // 換到別的父節點：原本拖動的位移是相對舊位置的，清掉；獨立元件連上之後不再用 at
+        if (m.has("pos")) m.delete("pos");
+        if (m.has("at")) m.delete("at");
+      }
+      this.nodes.get(parent)!.delete("collapsed");
+    });
+    return true;
+  }
+
+  /** 在兄弟之間上移（-1）或下移（+1） */
+  shift(id: string, step: -1 | 1): boolean {
+    const parent = this.effectiveParent(id);
+    if (!parent) return false;
+    const sibs = this.children(parent);
+    const i = sibs.indexOf(id) + step;
+    if (i < 0 || i >= sibs.length) return false;
+    return this.move(id, parent, i);
+  }
+
+  /** 排版用的樹（中心元件；`top` = 從某個獨立元件開始） */
+  tree(structure: Structure = this.structure, top: string = this.rootId): TreeNode {
+    const index = this.childIndex();
+    const build = (id: string): TreeNode => {
+      const n = this.node(id)!;
+      const kids = index.get(id) ?? [];
+      // 獨立元件的位置用 at；中心元件和其他元件用自由拖動的位移
+      const offset = id === top && top !== this.rootId ? undefined : this.offset(id, structure);
+      const style = this.nodeStyle(id);
+      const extra = { ...(offset ? { offset } : {}), ...(style ? { style } : {}) };
+      if (n.collapsed && kids.length) return { ...n, ...extra, children: [], hidden: countBelow(id, index) };
+      return { ...n, ...extra, children: kids.map(build), hidden: 0 };
+    };
+    return build(top);
+  }
+
+  /** 每個獨立元件的樹（at = 位置） */
+  floating(structure: Structure = this.structure): (TreeNode & { at: Offset })[] {
+    return this.floatingIds().map((id) => ({ ...this.tree(structure, id), at: this.at(id) ?? [0, 0] }));
+  }
+
+  /** 匯出成 Markdown 大綱（每層縮排兩格） */
+  toMarkdown(): string {
+    const index = this.childIndex();
+    const lines: string[] = [`# ${oneLine(this.node(this.rootId)?.text ?? "")}`];
+    const walk = (id: string, depth: number) => {
+      for (const c of index.get(id) ?? []) {
+        lines.push(`${"  ".repeat(depth)}- ${oneLine(this.node(c)!.text)}`);
+        walk(c, depth + 1);
+      }
+    };
+    walk(this.rootId, 0);
+    // 獨立元件各自一段
+    for (const f of this.floatingIds()) {
+      lines.push("", `# ${oneLine(this.node(f)!.text)}`);
+      walk(f, 0);
+    }
+    return lines.join("\n") + "\n";
+  }
+
+  /**
+   * 把縮排的文字（Markdown 清單、或用 Tab／空白縮排的純文字）加到 `parent` 底下，回傳新增的第一層節點。
+   * 用來貼上大綱：每一行一個節點，縮排比上一行深就是它的子節點。
+   */
+  addOutline(parent: string, text: string): string[] {
+    const items = parseOutline(text);
+    const top: string[] = [];
+    this.doc.transact(() => {
+      const stack: { level: number; id: string }[] = [{ level: -1, id: parent }];
+      for (const { level, text: t } of items) {
+        while (stack.length > 1 && stack[stack.length - 1].level >= level) stack.pop();
+        const id = this.addChild(stack[stack.length - 1].id, t);
+        if (stack.length === 1) top.push(id);
+        stack.push({ level, id });
+      }
+    });
+    return top;
+  }
+
+  // ── 變動通知、復原 ──────────────────────────────────
+
+  onChange(callback: (event: { local: boolean }) => void): () => void {
+    const handler = (_u: Uint8Array, _o: unknown, _d: Y.Doc, tr: Y.Transaction) => callback({ local: tr.local });
+    this.doc.on("update", handler);
+    return () => this.doc.off("update", handler);
+  }
+
+  /** 只追蹤 `origin` 的修改（其他裝置同步來的不會被復原）；本機修改請包在 doc.transact(fn, origin) */
+  createUndoManager(origin: unknown): Y.UndoManager {
+    return new Y.UndoManager([this.nodes, this.meta, this.linkMap], { trackedOrigins: new Set([origin]), captureTimeout: 0 });
+  }
+
+  // ── 內部 ───────────────────────────────────────────
+
+  /** 父節點 → 子節點（依 order 排序；order 相同用代號，所有裝置一致） */
+  private childIndex(): Map<string, string[]> {
+    const index = new Map<string, { id: string; order: string }[]>();
+    for (const [id, m] of this.nodes) {
+      const p = this.effectiveParent(id);
+      if (!p) continue;
+      let list = index.get(p);
+      if (!list) index.set(p, (list = []));
+      list.push({ id, order: (m.get("order") as string) ?? "" });
+    }
+    const out = new Map<string, string[]>();
+    for (const [p, list] of index) {
+      list.sort((a, b) => (a.order < b.order ? -1 : a.order > b.order ? 1 : a.id < b.id ? -1 : 1));
+      out.set(p, list.map((c) => c.id));
+    }
+    return out;
+  }
+
+  /** 存的父節點，但遇到迴圈或父節點不存在時改為中心元件；獨立元件回傳 null */
+  private effectiveParent(id: string): string | null {
+    const root = this.rootId;
+    if (id === root) return null;
+    const stored = this.nodes.get(id)?.get("parent") as string | null | undefined;
+    if (stored === null) return null;
+    if (!stored || !this.nodes.has(stored)) return root;
+    // 往上走到中心元件或獨立元件；走不到（迴圈）就接到中心元件
+    const seen = new Set([id]);
+    for (let p: string | null | undefined = stored; p !== root; ) {
+      if (!p || seen.has(p) || !this.nodes.has(p)) return root;
+      seen.add(p);
+      const up = this.nodes.get(p)!.get("parent") as string | null | undefined;
+      if (up === null) break;
+      p = up;
+    }
+    return stored;
+  }
+
+  /** `parent` 的子節點之間第 `index` 個位置的 order（`skip` = 正在移動的節點，不算在內） */
+  private orderAt(parent: string, index: number, skip?: string): string {
+    const sibs = this.children(parent).filter((c) => c !== skip);
+    const i = Math.max(0, Math.min(index, sibs.length));
+    const ord = (id: string) => (this.nodes.get(id)!.get("order") as string) || null;
+    const lo = i > 0 ? ord(sibs[i - 1]) : null;
+    const hi = i < sibs.length ? ord(sibs[i]) : null;
+    if (lo !== null && hi !== null && lo >= hi) return generateKeyBetween(lo, null); // 兩台裝置產生了相同的 order：放到後面
+    return generateKeyBetween(lo, hi);
+  }
+}
+
+function countBelow(id: string, index: Map<string, string[]>): number {
+  let n = 0;
+  const stack = [...(index.get(id) ?? [])];
+  while (stack.length) {
+    const c = stack.pop()!;
+    n++;
+    stack.push(...(index.get(c) ?? []));
+  }
+  return n;
+}
+
+const round1 = (v: number) => Math.round(v * 10) / 10;
+
+const oneLine = (s: string) => s.replace(/\s*\n\s*/g, " ").trim();
+
+/** 解析縮排的文字：回傳每一行的層級與文字（空行略過；「- 」「* 」「1. 」「# 」等標記去掉） */
+export function parseOutline(text: string): { level: number; text: string }[] {
+  const out: { level: number; text: string }[] = [];
+  const indents: number[] = [];
+  for (const raw of text.replace(/\r/g, "").split("\n")) {
+    if (!raw.trim()) continue;
+    const indent = raw.match(/^[ \t]*/)![0].replace(/\t/g, "    ").length;
+    const t = raw.trim().replace(/^(#+\s+|[-*+•]\s+|\d+[.)]\s+)/, "").trim();
+    if (!t) continue;
+    // 縮排換算成層級：比之前的縮排深就多一層，回到之前的縮排就回到那一層
+    while (indents.length && indents[indents.length - 1] > indent) indents.pop();
+    if (!indents.length || indents[indents.length - 1] < indent) indents.push(indent);
+    out.push({ level: indents.length - 1, text: t });
+  }
+  return out;
+}
+
+function newId(): string {
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((b) => b.toString(36).padStart(2, "0")).join("").slice(0, 16);
+}
