@@ -117,3 +117,27 @@
 .mm-dialog label.is-disabled { color: var(--text-2); opacity: 0.6; }
 .mm-dialog__actions { display: flex; justify-content: flex-end; gap: 8px; }
 .mm-formats { margin: -4px 0 16px; font-size: 12px; color: var(--text-2); }
+
+/* AI 產生 */
+.mm-dialog__backdrop--fixed { position: fixed; }
+.mm-ai { width: min(560px, 100%); max-height: calc(100vh - 32px); overflow-y: auto; }
+.mm-ai__row { flex-direction: row !important; flex-wrap: wrap; gap: 4px 16px !important; }
+.mm-ai__row legend { width: 100%; }
+.mm-ai__block { display: flex !important; flex-direction: column; align-items: stretch !important; gap: 4px !important; }
+.mm-ai__label { font-size: 12px; color: var(--text-2); }
+.mm-ai textarea { font: inherit; font-size: 14px; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg, transparent); color: var(--text); resize: vertical; min-height: 96px; }
+.mm-ai__files { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.mm-ai__files ul { width: 100%; margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.mm-ai__files li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px; border-radius: 6px; background: var(--accent-soft, rgb(0 0 0 / 0.05)); }
+.mm-ai__remove { border: 0; background: none; color: var(--text-2); font-size: 18px; cursor: pointer; line-height: 1; padding: 0 4px; }
+.mm-ai__hint { font-size: 12px; color: var(--text-2); margin: 0; }
+.mm-ai__settings { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.mm-ai__settings summary { cursor: pointer; font-size: 13px; }
+.mm-ai__settings label:not(.mm-ai__check) { display: grid !important; grid-template-columns: 7em 1fr; align-items: center; margin-top: 6px; }
+.mm-ai__settings label span { font-size: 13px; color: var(--text-2); }
+.mm-ai__settings input:not([type="checkbox"]) { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); min-width: 0; }
+.mm-ai__check { margin-top: 6px; }
+.mm-ai__test { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.mm-ai__status { margin: 0; font-size: 13px; color: var(--text-2); }
+.mm-ai__error { margin: 0; font-size: 13px; color: var(--danger); white-space: pre-wrap; }
+@media (max-width: 600px) { .mm-ai__settings label:not(.mm-ai__check) { grid-template-columns: 1fr; } }

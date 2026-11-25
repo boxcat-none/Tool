@@ -51,7 +51,7 @@ export type Offset = [dx: number, dy: number];
 
 /** 單一主題的外觀設定（覆蓋樣式主題的預設） */
 export interface NodeOverride {
-  shape?: "rounded" | "pill" | "rect" | "card" | "ellipse" | "underline";
+  shape?: "rounded" | "pill" | "rect" | "card" | "ellipse" | "underline" | "diamond" | "parallelogram";
   /** 連到父主題的線 */
   line?: "curve" | "elbow" | "straight";
   /** 線寬（px） */
@@ -79,6 +79,10 @@ export interface MindLink {
   width?: number;
   dash?: boolean;
   color?: string;
+  /** 終點畫箭頭（流程圖） */
+  arrow?: boolean;
+  /** 線上的文字（例如流程圖判斷的「是／否」） */
+  label?: string;
 }
 
 export type LinkStyle = Omit<MindLink, "id" | "from" | "to">;
@@ -120,18 +124,23 @@ export class MindMap {
     return this.links().some((l) => (l.from === a && l.to === b) || (l.from === b && l.to === a));
   }
 
-  /** 可以從 from 拉線到 to：不同的兩個元件、都存在、之間還沒有線 */
+  /** 可以從 from 拉線到 to：不同的兩個元件、都存在、之間還沒有線（流程圖只看同方向） */
   canLink(from: string, to: string): boolean {
-    return from !== to && this.nodes.has(from) && this.nodes.has(to) && !this.connected(from, to);
+    if (from === to || !this.nodes.has(from) || !this.nodes.has(to)) return false;
+    // 流程圖：可以往回連（迴圈，例如「否 → 回到上一步」），只有同方向重複的不行
+    if (this.kind === "flow") return this.effectiveParent(to) !== from && !this.links().some((l) => l.from === from && l.to === to);
+    return !this.connected(from, to);
   }
 
   /** 拉一條線（不改變任何元件的上層）；不能連時回傳 null */
-  addLink(from: string, to: string): string | null {
+  addLink(from: string, to: string, extra: LinkStyle = {}): string | null {
     if (!this.canLink(from, to)) return null;
     const id = newId();
     let last: string | null = null;
     for (const l of this.linkMap.values()) if (l.order && (last === null || l.order > last)) last = l.order;
-    this.linkMap.set(id, { from, to, order: generateKeyBetween(last, null) });
+    // 流程圖的線預設有箭頭
+    const style: LinkStyle = { ...(this.kind === "flow" ? { arrow: true } : {}), ...extra };
+    this.linkMap.set(id, { from, to, ...style, order: generateKeyBetween(last, null) });
     return id;
   }
 
@@ -199,6 +208,26 @@ export class MindMap {
 
   set structure(v: Structure) {
     this.meta.set("structure", v);
+  }
+
+  /** 圖的種類：mind = 心智圖（樹）、flow = 流程圖（元件都是獨立元件，用有箭頭的線連） */
+  get kind(): "mind" | "flow" {
+    return this.meta.get("kind") === "flow" ? "flow" : "mind";
+  }
+
+  set kind(v: "mind" | "flow") {
+    if (v === "flow") this.meta.set("kind", "flow");
+    else this.meta.delete("kind");
+  }
+
+  /** 開啟時要先自動排版（AI 產生的流程圖：元件大小要在畫面上量過才能排） */
+  get layoutPending(): boolean {
+    return !!this.meta.get("layoutPending");
+  }
+
+  set layoutPending(v: boolean) {
+    if (v) this.meta.set("layoutPending", true);
+    else this.meta.delete("layoutPending");
   }
 
   get theme(): string {

@@ -130,6 +130,25 @@ links  linkId → { from, to, line?, width?, dash?, color? }   手拉的線
 
 「分支顏色」：在 A、D 元件改分支的顏色；在 E 元件改連接點與線的顏色；子元件跟著用。
 
+## AI 產生架構圖／流程圖（使用者 2026-11-25 指定）
+
+使用者要接自己訓練的語言模型，把文字、文件、圖片轉成架構圖或流程圖。使用者選擇：模型跑在本機伺服器（OpenAI 相容 API）、兩種圖都要、文件要 HTML／PowerPoint／PDF／Word／文字／筆記本；模型看不看得懂圖片不確定。
+
+| 部分 | 位置 |
+|---|---|
+| 提示詞、解析回答（JSON／Markdown／Mermaid）、流程圖排版、Word／PowerPoint XML 轉 Markdown、建立圖 | `packages/mindmap/src/ai.ts` |
+| 連模型（`/chat/completions`、`/models`）、設定（存在這台裝置） | `apps/web/src/mindmap/ai/client.ts` |
+| 檔案轉文字：PDF（pdf.js）、docx／pptx／guganote（解壓縮）、HTML（標題、清單）、圖片（縮到 1600 px） | `apps/web/src/mindmap/ai/extract.ts` |
+| 對話框（清單頁「AI 產生…」） | `apps/web/src/mindmap/ai/AiDialog.tsx` |
+
+- **連線**：OpenAI 相容 API，Ollama（預設 `http://localhost:11434/v1`）、LM Studio、vLLM、llama.cpp server 都可以；只填 `http://主機:埠` 會自動補 `/v1`。先要求 `response_format: json_object`，伺服器不支援（400／422…）時改一般模式再送一次。瀏覽器直接連，所以伺服器要允許這個網頁的來源（Ollama：`OLLAMA_ORIGINS`；LM Studio：開啟 CORS），連不上時錯誤訊息會寫出要設定的值。
+- **提示詞**：要求只回答 JSON。架構圖 `{title, root:{text, children}}`；流程圖 `{title, nodes:[{id, text, type}], edges:[{from, to, label}]}`，type = start／end／process／decision／io。回答不照規矩時：架構圖接受 Markdown 大綱，流程圖接受 Mermaid（`flowchart TD`），也會略過 `<think>…</think>`。
+- **流程圖**：存成同一種文件，`meta.kind = "flow"`、結構用組織圖；第一個「開始」是中心元件，其他是獨立元件，用手拉的線（有箭頭、線上文字）連。形狀：開始／結束 = 膠囊、步驟 = 方框、判斷 = 菱形、輸入輸出 = 平行四邊形。可以往回連（迴圈），往上的線從右邊繞回去。
+- **流程圖排版**（`layoutFlow`）：簡化的 Sugiyama：去掉迴圈的線 → 每個元件的層 = 上一步的層 + 1 → 同層依鄰居位置來回排序減少交叉 → 盡量放在上一步正下方、同層不重疊。AI 產生的圖打開時先量元件大小再排（`layoutPending`，不算在復原裡），排好後置中；之後「自動排列」也是這個排版。
+- **文件**：有結構的轉成 Markdown（Word 標題樣式 → #、清單 → -；PowerPoint 每張投影片標題 → ##；HTML h1～h6、ul／ol），模型比較容易整理。很長的內容只送前 N 字（預設 16000，可調）。`.ppt`／`.doc` 舊格式請另存新版。筆記本取裡面 PDF 的文字。
+- **圖片**：設定勾「模型看得懂圖片」時以 `image_url`（data URL）送給模型；沒勾時說明要多模態模型。
+- **不用 AI**：照標題、清單與段落轉成架構圖（段落太長截短），不送任何資料出去。
+
 ## 和筆記合併時要決定的事
 
 - 心智圖放在筆記本的哪裡：① 筆記本裡的一種頁面（整頁是心智圖）② 插在頁面上的物件（像圖片一樣可以移動、縮放）③ 維持獨立，但書櫃一起列出。

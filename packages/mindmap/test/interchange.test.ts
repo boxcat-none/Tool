@@ -130,3 +130,15 @@ describe("開啟檔案", () => {
     expect(e.text).toBe("<b>中文");
   });
 });
+
+describe("Markdown 段落", () => {
+  it("paragraphs：一般段落放在目前的標題底下，太長的截短；預設不放", () => {
+    const md = "# 報告\n這是一份測試用的文件。\n## 結論\n" + "很長".repeat(40) + "\n- 項目\n";
+    const r = parseMarkdown(md, "x", { paragraphs: true });
+    expect(r.root.children.map((c) => c.text)).toEqual(["這是一份測試用的文件。", "結論"]);
+    const concl = r.root.children[1];
+    expect(concl.children[0].text.endsWith("…")).toBe(true);
+    expect(concl.children[1].text).toBe("項目");
+    expect(parseMarkdown(md, "x").root.children.map((c) => c.text)).toEqual(["結論"]);
+  });
+});

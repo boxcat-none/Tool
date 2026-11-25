@@ -32,6 +32,7 @@ iPad／iPhone 用網頁版。目標是多台裝置（iPad＋電腦）即時協�
 | W12–W13 | 插入圖片、圖片旋轉、套索選取、iPhone 版面 | ✅ |
 | W14 | backlog #20：複製貼上、圖片上下順序、套索縮放旋轉 | PR #14（等使用者說「合併」） |
 | 心智圖 | 獨立開發（使用者要求先不和筆記合併）：四種結構、五種樣式、編輯、匯出 | 第一版，分支 `claude/mindmap`；見 `docs/mindmap.md` |
+| 心智圖 AI 產生 | 連使用者自己的模型（OpenAI 相容 API），把文字、文件、圖片轉成架構圖或流程圖 | 分支 `claude/mindmap-ai`（疊在 `claude/mindmap` 上）；見 `docs/mindmap.md`「AI 產生」 |
 | W15+ | 雲端同步、App Store（選做） | 未開始 |
 
 ## 下一步

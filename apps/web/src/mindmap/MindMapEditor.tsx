@@ -1,5 +1,6 @@
 import {
   dropTarget,
+  layoutFlow,
   subtreeIds,
   MINDMAP_EXTENSION,
   moveNodes,
@@ -69,6 +70,8 @@ const SHAPES = [
   { label: "卡片", value: "card" },
   { label: "橢圓", value: "ellipse" },
   { label: "底線", value: "underline" },
+  { label: "菱形", value: "diamond" },
+  { label: "平行四邊形", value: "parallelogram" },
 ];
 const LINES = [
   { label: "預設", value: "" },
@@ -190,6 +193,19 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
     setView({ s, x: width / 2 - (b.x + b.width / 2) * s, y: height / 2 - (b.y + b.height / 2) * s });
   }, [layout]);
 
+  // AI 產生的流程圖：第一次打開時，元件大小量好了才能排版（不算在復原裡），排好後置中
+  /** 排版前的版面：版面換掉之後要再置中一次 */
+  const needFit = useRef<Layout | null>(null);
+  useEffect(() => {
+    if (!map.layoutPending) return;
+    needFit.current = layout;
+    map.doc.transact(() => {
+      applyFlowLayout();
+      map.layoutPending = false;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map]);
+
   // 第一次開啟、換結構時置中
   const fitKey = `${map.id}:${structure}`;
   const fitted = useRef("");
@@ -198,6 +214,12 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
     fitted.current = fitKey;
     fit();
   }, [fitKey, fit]);
+  // 自動排版完（版面變了）再置中一次
+  useLayoutEffect(() => {
+    if (!needFit.current || needFit.current === layout) return;
+    needFit.current = null;
+    fit();
+  }, [fit, layout]);
 
   // 畫布大小改變（旋轉 iPad、拉視窗）：保持畫面中心不變
   useEffect(() => {
@@ -334,8 +356,35 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
    *   獨立元件（連同底下的元件）由上往下排成整齊的一列、左邊對齊。
    *   整張圖：獨立元件排在中心元件那棵樹的右邊；只排選到的：排在它們原本範圍的左上角。
    */
+  /**
+   * 流程圖的自動排版：所有元件（上層 → 子元件的線和手拉的線都算）由上往下分層排好。
+   * 每個元件移動量 = 目標 - 現在；位移會傳給子元件，所以子元件只記「比上層多移的」。
+   */
+  const applyFlowLayout = () => {
+    const lay = prepare(map, structure, theme).layout;
+    const flowEdges = [...lay.nodes.filter((n) => n.parent).map((n) => ({ from: n.parent!, to: n.id })), ...map.links().map((l) => ({ from: l.from, to: l.to }))];
+    const pos = layoutFlow(lay.nodes.map((n) => ({ id: n.id, width: n.width, height: n.height })), flowEdges);
+    const moved = new Map<string, [number, number]>();
+    // lay.nodes 是上層在前（先序）
+    for (const n of lay.nodes) {
+      const t = pos.get(n.id);
+      if (!t) continue;
+      const mv: [number, number] = [t[0] - n.x, t[1] - n.y];
+      moved.set(n.id, mv);
+      if (map.isFloating(n.id)) {
+        map.setAt(n.id, t);
+        continue;
+      }
+      const pm = (n.parent && moved.get(n.parent)) || [0, 0];
+      const old = map.offset(n.id) ?? [0, 0];
+      map.setOffset(n.id, [old[0] + mv[0] - pm[0], old[1] + mv[1] - pm[1]]);
+    }
+  };
+
   const arrange = (only?: string[]) =>
     act(() => {
+      // 流程圖的「自動排列」= 由上往下分層排好
+      if (!only && map.kind === "flow") return applyFlowLayout();
       if (!only) map.clearOffsets();
       else {
         const set = new Set(only);
@@ -384,7 +433,7 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
     });
   /** 有沒有東西可以排列 */
   const canArrange = (only?: string[]) =>
-    only ? only.some((id) => map.offset(id) || map.isFloating(id)) && (only.length > 1 || !!map.offset(only[0])) : map.hasOffsets() || map.floatingIds().length > 0;
+    !only && map.kind === "flow" ? map.size > 1 : only ? only.some((id) => map.offset(id) || map.isFloating(id)) && (only.length > 1 || !!map.offset(only[0])) : map.hasOffsets() || map.floatingIds().length > 0;
 
   /** 刪掉線條：子元件（和它底下的元件）變成獨立元件，留在原地 */
   const detachEdges = (ids: string[]) => {
@@ -541,7 +590,8 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
     if (toggle) return { kind: "toggle", id: toggle };
     const node = el.closest("[data-node]")?.getAttribute("data-node");
     if (node) return { kind: "node", id: node };
-    const edge = el.closest("[data-edge]")?.getAttribute("data-edge");
+    // 線上的文字也算點到那條線
+    const edge = el.closest("[data-edge]")?.getAttribute("data-edge") ?? el.closest("[data-edge-label]")?.getAttribute("data-edge-label");
     if (edge) return { kind: "edge", id: edge };
     return { kind: "background" };
   };
@@ -897,6 +947,31 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
     },
   ];
 
+  /** 手拉的線才有的設定：箭頭、線上的文字 */
+  const linkOnlyItems = (ids: string[]): MenuItem[] => {
+    if (!ids.length || !ids.every(isLink)) return [];
+    const lids = ids.map(linkId);
+    const arrows = new Set(lids.map((id) => (map.link(id)?.arrow ? "true" : "")));
+    return [
+      {
+        kind: "choices",
+        label: "箭頭",
+        options: [{ label: "無", value: "" }, { label: "有", value: "true" }],
+        value: arrows.size === 1 ? [...arrows][0] : "?",
+        onSelect: (v) => act(() => map.setLinkStyle(lids, { arrow: v === "true" || null })),
+      },
+      {
+        kind: "action",
+        label: "線上的文字…",
+        onSelect: () => {
+          const cur = lids.length === 1 ? map.link(lids[0])?.label ?? "" : "";
+          const t = window.prompt("線上的文字（留空 = 不顯示）", cur);
+          if (t !== null) act(() => map.setLinkStyle(lids, { label: t.trim() || null }));
+        },
+      },
+    ];
+  };
+
   const menuItems = (): { title: string; items: MenuItem[] } => {
     if (!menu) return { title: "", items: [] };
     if (menu.kind === "background") {
@@ -925,6 +1000,7 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
         items: [
           ...lineItems(edgeIds),
           { kind: "colors", label: "顏色", options: COLORS, value: colorValue(edgeIds), onSelect: (c) => setColor(edgeIds, c) },
+          ...linkOnlyItems(edgeIds),
           { kind: "separator" },
           { kind: "action", label: "選取線條兩端的元件", onSelect: () => {
               const ends = edgeIds.flatMap((id) => { const e = edgeById(id); return e ? [e.parent, e.child] : []; });
