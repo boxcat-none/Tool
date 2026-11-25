@@ -37,6 +37,9 @@ importers:
       fflate:
         specifier: 0.8.3
         version: 0.8.3
+      pdf-lib:
+        specifier: npm:@cantoo/pdf-lib@2.11.1
+        version: '@cantoo/pdf-lib@2.11.1(html-entities@2.6.0)'
       pdfjs-dist:
         specifier: 6.4.299
         version: 6.4.299

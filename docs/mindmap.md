@@ -38,7 +38,8 @@
 | 資料模型（Yjs）、大綱匯入匯出 | `packages/mindmap/src/model.ts` |
 | 自動排版、連接線路徑、拖曳放下位置、方向鍵 | `packages/mindmap/src/layout.ts` |
 | 元件（五種樣式） | `packages/mindmap/src/theme.ts` |
-| `.gugamap` 檔 | `packages/mindmap/src/file.ts` |
+| `.gugamap` 檔、開啟檔案（依副檔名選格式） | `packages/mindmap/src/file.ts` |
+| FreeMind、OPML、Markdown、純文字的匯出與匯入 | `packages/mindmap/src/interchange.ts` |
 | 清單、儲存（IndexedDB） | `apps/web/src/mindmap/MindMapHome.tsx` `store.ts` |
 | 編輯畫面（SVG）、繪製 | `apps/web/src/mindmap/MindMapEditor.tsx` `MindMapCanvas.tsx` |
 
@@ -95,6 +96,26 @@ links  linkId → { from, to, line?, width?, dash?, color? }   手拉的線
 - 元件選單：新增子元件／同層、編輯文字、收合、顏色、形狀（圓角、膠囊、方框、卡片、橢圓、底線）、連到父元件的線（線型、粗細、虛線）、回到自動排版的位置、刪除。多選時一次改全部。
 - 線條選單：線型（曲線、直角、直線）、粗細、虛線、顏色、選取線條兩端的元件、刪除線條。線條的設定存在子元件上（`style.line/width/dash`）。
 - 背景選單：新增元件（獨立元件，不連線）、全選、整張圖置中、實際大小、自動排列、結構、樣式、匯出 PNG。
+
+## 匯出與匯入（使用者 2026-11-25 指定：照業界做法）
+
+2026-11-25 查過 XMind、MindNode：業界用 PNG／SVG／PDF 給人看，FreeMind（.mm）和 OPML 在不同軟體之間搬資料，Markdown 給文件與 AI，自己的格式做完整備份；匯入支援的格式比匯出多。
+
+| 格式 | 匯出 | 開啟（清單頁「開啟檔案」） | 保留什麼 |
+|---|---|---|---|
+| `.gugamap` | ✅ | ✅（同一張圖會合併） | 全部（Yjs 文件） |
+| FreeMind `.mm` | ✅ | ✅ | 文字、層級、收合、分支顏色、手拉的線（`arrowlink`）、獨立元件（Freeplane 的 `FreeNode` 標記）；讀得懂 `richcontent` 的 HTML 文字 |
+| OPML `.opml` | ✅ | ✅ | 文字、層級；獨立元件是另一個最上層 outline（`gugaFloating="true"`）。別的軟體存的 OPML 有很多個最上層時，以標題當中心元件 |
+| Markdown `.md` | ✅ | ✅ | 文字、層級。`#` = 中心元件，`##`、`###`… 與清單縮排往下；之後的 `#` = 獨立元件；行內標記（粗體、連結…）去掉，程式碼區塊略過 |
+| 純文字 `.txt` | — | ✅ | 每行一個元件，縮排表示層級 |
+| PNG | ✅ | — | 外觀（最多 2 倍解析度） |
+| SVG | ✅ | — | 外觀（向量） |
+| PDF | ✅ | — | 外觀。一頁放整張圖，頁面大小跟著圖，內容是 3 倍解析度的圖片（不用另外嵌入中文字型） |
+
+- 圖片（PNG、SVG、PDF）匯出前有選項視窗：整張圖／只匯出選取的元件（只畫兩端都選到的線）、透明背景。
+- 匯入的獨立元件先排在右邊一列，打開後按「自動排列」整理。
+- XML 用自己寫的小解析器（`parseXml`），套件測試在 Node 裡跑、不依賴瀏覽器的 DOMParser。
+
 - 選單裡的選項（形狀、線型、顏色…）按了不會關閉，可以接著調整；一般動作按了會關閉。
 
 ### 樣式

@@ -19,8 +19,18 @@ async function typeTopic(p, text) {
   await p.locator("textarea.mm-edit").waitFor();
   await p.keyboard.type(text);
 }
-async function download(p, label) {
-  const [d] = await Promise.all([p.waitForEvent("download"), p.getByLabel("匯出").selectOption({ label })]);
+/** 匯出：圖片格式（PNG、SVG、PDF）會先開選項視窗，按「匯出」才下載 */
+async function download(p, label, opts = {}) {
+  const image = ["PNG 圖片", "SVG 圖片", "PDF"].includes(label);
+  const done = p.waitForEvent("download");
+  await p.getByLabel("匯出").selectOption({ label });
+  if (image) {
+    const dlg = p.getByRole("dialog", { name: `匯出 ${label}` });
+    if (opts.transparent) await dlg.getByLabel("透明背景").check();
+    if (opts.selection) await dlg.getByLabel(/只匯出選取的/).check();
+    await dlg.getByRole("button", { name: "匯出" }).click();
+  }
+  const d = await done;
   const file = `${OUT}/${d.suggestedFilename()}`;
   await d.saveAs(file);
   return { name: d.suggestedFilename(), data: fs.readFileSync(file) };
@@ -491,6 +501,40 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   const svg = await download(page, "SVG 圖片");
   const svgText = svg.data.toString("utf8");
   check(svgText.startsWith("<svg") && svgText.includes("主題") && !svgText.includes("data-selected"), "export SVG (without the selection box)");
+  // 透明背景：PNG 角落是透明的；SVG 沒有背景
+  const pngT = await download(page, "PNG 圖片", { transparent: true });
+  const corner = await page.evaluate(async (b64) => {
+    const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+    const c = new OffscreenCanvas(bmp.width, bmp.height).getContext("2d");
+    c.drawImage(bmp, 0, 0);
+    return [c.getImageData(1, 1, 1, 1).data[3], c.getImageData(0, 0, 1, 1).data[3]];
+  }, pngT.data.toString("base64"));
+  const cornerOpaque = await page.evaluate(async (b64) => {
+    const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+    const c = new OffscreenCanvas(bmp.width, bmp.height).getContext("2d");
+    c.drawImage(bmp, 0, 0);
+    return c.getImageData(1, 1, 1, 1).data[3];
+  }, png.data.toString("base64"));
+  check(corner[0] === 0 && cornerOpaque === 255, "PNG with transparent background", [corner, cornerOpaque]);
+  const svgT = (await download(page, "SVG 圖片", { transparent: true })).data.toString("utf8");
+  check(svgT.split("<rect").length < svgText.split("<rect").length && svgT.includes("主題"), "SVG with transparent background has no background rect");
+  // 只匯出選取的元件
+  await node(page, "目標").click();
+  const svgSel = (await download(page, "SVG 圖片", { selection: true })).data.toString("utf8");
+  check(svgSel.includes("目標") && !svgSel.includes("主題") && !svgSel.includes("<path"), "export only the selected element", svgSel.length);
+  const dlgCheck = page.getByLabel("匯出");
+  await page.keyboard.press("Escape");
+  await dlgCheck.selectOption({ label: "PNG 圖片" });
+  check(await page.getByRole("dialog", { name: "匯出 PNG 圖片" }).getByLabel(/只匯出選取的/).isDisabled(), "selection-only is disabled when nothing is selected");
+  await page.getByRole("dialog").getByRole("button", { name: "取消" }).click();
+  check(await page.getByRole("dialog").count() === 0, "cancel closes the export dialog");
+  const pdf = await download(page, "PDF");
+  check(pdf.name.endsWith(".pdf") && pdf.data.subarray(0, 5).toString() === "%PDF-" && pdf.data.length > 5000, "export PDF", [pdf.name, pdf.data.length]);
+  const opml = await download(page, "OPML 大綱（.opml）");
+  check(opml.name.endsWith(".opml") && opml.data.toString("utf8").includes('<opml version="2.0">'), "export OPML", opml.name);
+  const fm = await download(page, "FreeMind（.mm）");
+  check(fm.name.endsWith(".mm") && fm.data.toString("utf8").startsWith('<map version="1.0.1">'), "export FreeMind", fm.name);
+  const mdFile = await download(page, "Markdown 大綱");
   const file = await download(page, "心智圖檔（.gugamap）");
   check(file.name.endsWith(".gugamap") && JSON.parse(file.data.toString("utf8")).format === "gugamap", "export .gugamap", file.name);
   const mdBefore = await outline(page);
@@ -516,7 +560,20 @@ const outline = async (p) => (await download(p, "Markdown 大綱")).data.toStrin
   await page.locator('input[aria-label="選擇心智圖檔"]').setInputFiles({ name: file.name, mimeType: "application/json", buffer: file.data });
   await page.locator(".mm-canvas").waitFor();
   check((await outline(page)) === mdBefore, "opening the .gugamap file restores the map");
+  // 其他格式開成新的心智圖：內容（大綱）一樣
+  for (const [f, mime, label] of [[fm, "application/xml", "FreeMind"], [opml, "text/x-opml", "OPML"], [mdFile, "text/markdown", "Markdown"]]) {
+    await page.getByRole("button", { name: "回到心智圖清單" }).click();
+    await page.locator('input[aria-label="選擇心智圖檔"]').setInputFiles({ name: f.name, mimeType: mime, buffer: f.data });
+    await page.locator(".mm-canvas").waitFor();
+    check((await outline(page)) === mdBefore, `opening the ${label} file gives the same outline`, await outline(page));
+  }
   await page.getByRole("button", { name: "回到心智圖清單" }).click();
+  await page.locator('input[aria-label="選擇心智圖檔"]').setInputFiles({ name: "其他.txt", mimeType: "text/plain", buffer: Buffer.from("讀書\n\t數學\n\t英文\n") });
+  await page.locator(".mm-canvas").waitFor();
+  check((await outline(page)) === "# 讀書\n- 數學\n- 英文\n", "opening an indented text file", await outline(page));
+  await page.getByRole("button", { name: "回到心智圖清單" }).click();
+  await page.locator('input[aria-label="選擇心智圖檔"]').setInputFiles({ name: "x.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.7") });
+  check((await page.getByRole("alert").textContent()).startsWith("不支援這種檔案"), "unsupported file shows which formats work");
   await page.locator('input[aria-label="選擇心智圖檔"]').setInputFiles({ name: "壞.gugamap", mimeType: "application/json", buffer: Buffer.from("hello") });
   check(await page.getByRole("alert").textContent() === "這不是心智圖檔（.gugamap）", "a wrong file shows a clear error");
   check(errors.length === 0, "no page errors (desktop)", errors);

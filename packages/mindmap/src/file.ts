@@ -1,5 +1,6 @@
 import * as Y from "yjs";
 import { MindMap } from "./model";
+import { importOutlineFile } from "./interchange";
 
 /**
  * 心智圖檔（.gugamap）：JSON，裡面是 Yjs 文件的完整內容（base64），另附一份大綱方便直接看。
@@ -46,4 +47,17 @@ function fromBase64(s: string): Uint8Array {
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
+}
+
+/**
+ * 開啟任何支援的檔案：.gugamap（完整內容）、OPML、FreeMind（.mm）、Markdown、純文字。
+ * 副檔名不認得時看內容判斷。
+ */
+export function openAnyMindMapFile(name: string, text: string): MindMap {
+  const lower = name.toLowerCase();
+  const trimmed = text.replace(/^﻿/, "").trimStart();
+  if (lower.endsWith(MINDMAP_EXTENSION) || (!/\.(opml|mm|md|markdown|txt)$/.test(lower) && trimmed.startsWith("{"))) return openMindMapFile(text);
+  const map = importOutlineFile(name, text);
+  if (!map) throw new Error("不支援這種檔案。可以開啟：.gugamap、OPML（.opml）、FreeMind（.mm）、Markdown（.md）、純文字（.txt）");
+  return map;
 }

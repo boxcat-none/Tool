@@ -1,4 +1,4 @@
-import { MINDMAP_EXTENSION, MindMap, openMindMapFile } from "@tool/mindmap";
+import { IMPORT_EXTENSIONS, MindMap, openAnyMindMapFile } from "@tool/mindmap";
 import { useEffect, useRef, useState } from "react";
 import { MindMapEditor } from "./MindMapEditor";
 import { openMindMapStore, type MindMapMeta, type MindMapStore, type OpenedMindMap } from "./store";
@@ -52,7 +52,8 @@ export default function MindMapHome() {
   const openFile = async (file: File) => {
     if (!store) return;
     try {
-      const map = openMindMapFile(await file.text());
+      // .gugamap 是完整內容；OPML、FreeMind、Markdown、純文字建立一張新的心智圖
+      const map = openAnyMindMapFile(file.name, await file.text());
       const existing = list.find((m) => m.id === map.id);
       // 同一張心智圖（例如另一台裝置存的檔案）：合併進現有的
       const o = await store.add(map);
@@ -89,11 +90,11 @@ export default function MindMapHome() {
       {error && <p className="mm-warn" role="alert">{error}</p>}
       <div className="mm-home__actions">
         <button type="button" className="btn btn--primary" onClick={() => void create()} disabled={!store}>新增心智圖</button>
-        <button type="button" className="btn" onClick={() => fileInput.current?.click()} disabled={!store}>開啟心智圖檔（{MINDMAP_EXTENSION}）</button>
+        <button type="button" className="btn" onClick={() => fileInput.current?.click()} disabled={!store}>開啟檔案</button>
         <input
           ref={fileInput}
           type="file"
-          accept={`${MINDMAP_EXTENSION},application/json`}
+          accept={[...IMPORT_EXTENSIONS, "application/json", "text/x-opml", "text/markdown", "text/plain"].join(",")}
           hidden
           aria-label="選擇心智圖檔"
           onChange={(e) => {
@@ -103,6 +104,7 @@ export default function MindMapHome() {
           }}
         />
       </div>
+      <p className="mm-formats">可以開啟：心智圖檔（.gugamap）、FreeMind（.mm，XMind、MindNode、Freeplane 都能匯出）、OPML、Markdown、純文字（縮排表示層級）</p>
       {list.length > 0 ? (
         <ul className="mm-list" aria-label="我的心智圖">
           {list.map((m) => (

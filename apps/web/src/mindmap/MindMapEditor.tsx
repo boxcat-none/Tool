@@ -6,6 +6,8 @@ import {
   neighbor,
   nodesInRect,
   saveMindMapFile,
+  toFreeMind,
+  toOPML,
   segmentHitsRect,
   STRUCTURES,
   THEMES,
@@ -19,6 +21,7 @@ import {
   type Structure,
 } from "@tool/mindmap";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { UndoManager } from "yjs";
 import { platform } from "../lib/platform";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
@@ -80,6 +83,10 @@ const WIDTHS = [
   { label: "粗", value: "5" },
 ];
 
+type ExportKind = "png" | "svg" | "pdf" | "md" | "opml" | "mm" | "gugamap";
+type ImageKind = "png" | "svg" | "pdf";
+const IMAGE_LABEL: Record<ImageKind, string> = { png: "PNG 圖片", svg: "SVG 圖片", pdf: "PDF" };
+
 interface View {
   x: number;
   y: number;
@@ -117,9 +124,10 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
   /** 從元件的圓點拉線：to = 指標位置（排版座標）；target = 指到的元件；ok = 可以連 */
   const [link, setLink] = useState<LinkState | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  /** 匯出圖片（PNG、SVG、PDF）的選項視窗 */
+  const [exportDialog, setExportDialog] = useState<{ kind: ImageKind; transparent: boolean; selection: boolean } | null>(null);
   const [history, setHistory] = useState({ undo: false, redo: false });
   const hostRef = useRef<HTMLDivElement>(null);
-  const contentRef = useRef<SVGGElement>(null);
   const undoRef = useRef<UndoManager | null>(null);
 
   const act = useCallback((fn: () => void) => map.doc.transact(fn, LOCAL), [map]);
@@ -424,7 +432,7 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
-      if (editing || menu || t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) return;
+      if (editing || menu || exportDialog || t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) return;
       const mod = e.ctrlKey || e.metaKey;
       const key = e.key;
       if (mod && (key === "z" || key === "Z") && !e.shiftKey) {
@@ -773,48 +781,77 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
 
   const fileBase = (map.title || "心智圖").replace(/[\\/:*?"<>|]+/g, "_").slice(0, 80);
 
-  const svgText = () => {
-    const b = layout.bounds;
+  /**
+   * 匯出用的 SVG：只有心智圖內容（沒有選取框、圓點等操作用的東西），四周留白。
+   * transparent = 不畫背景；only = 只匯出這些元件（和它們之間的線）。
+   */
+  const svgText = (opts: { transparent?: boolean; only?: string[] } = {}) => {
+    const lay = opts.only?.length ? subsetLayout(layout, opts.only) : layout;
+    const b = lay.bounds;
     const pad = 32;
     const x = Math.floor(b.x - pad), y = Math.floor(b.y - pad);
     const w = Math.ceil(b.width + pad * 2), h = Math.ceil(b.height + pad * 2);
-    const inner = contentRef.current!.innerHTML;
+    const inner = renderToStaticMarkup(<MindMapContent data={data} layout={lay} />);
+    const bg = opts.transparent ? "" : `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${theme.background}"/>`;
     return {
       w,
       h,
-      text: `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="${x} ${y} ${w} ${h}"><rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${theme.background}"/>${inner}</svg>`,
+      text: `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="${x} ${y} ${w} ${h}" font-family='${FONT.replace(/'/g, "")}'>${bg}${inner}</svg>`,
     };
   };
 
-  const exportAs = async (kind: "png" | "svg" | "md" | "gugamap") => {
+  /** SVG 畫成 PNG（maxScale 倍，總像素不超過約 1600 萬） */
+  const pngBytes = async (opts: { transparent?: boolean; only?: string[] }, maxScale: number) => {
+    const { w, h, text } = svgText(opts);
+    const scale = Math.min(maxScale, Math.sqrt(16_000_000 / (w * h)));
+    const url = URL.createObjectURL(new Blob([text], { type: "image/svg+xml" }));
+    try {
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(w * scale);
+      canvas.height = Math.round(h * scale);
+      canvas.getContext("2d")!.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise<Blob>((res, rej) => canvas.toBlob((b) => (b ? res(b) : rej(new Error("無法產生圖片"))), "image/png"));
+      return { w, h, data: new Uint8Array(await blob.arrayBuffer()) };
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  };
+
+  const exportAs = async (kind: ExportKind, opts: { transparent?: boolean; only?: string[] } = {}) => {
     try {
       let result: string | null;
       const enc = new TextEncoder();
-      if (kind === "gugamap") result = await platform.saveFile({ name: fileBase + MINDMAP_EXTENSION, data: enc.encode(saveMindMapFile(map)) });
-      else if (kind === "md") result = await platform.saveFile({ name: `${fileBase}.md`, data: enc.encode(map.toMarkdown()) });
-      else if (kind === "svg") result = await platform.saveFile({ name: `${fileBase}.svg`, data: enc.encode(svgText().text) });
+      const save = (ext: string, data: Uint8Array) => platform.saveFile({ name: fileBase + ext, data });
+      if (kind === "gugamap") result = await save(MINDMAP_EXTENSION, enc.encode(saveMindMapFile(map)));
+      else if (kind === "md") result = await save(".md", enc.encode(map.toMarkdown()));
+      else if (kind === "opml") result = await save(".opml", enc.encode(toOPML(map)));
+      else if (kind === "mm") result = await save(".mm", enc.encode(toFreeMind(map)));
+      else if (kind === "svg") result = await save(".svg", enc.encode(svgText(opts).text));
+      else if (kind === "png") result = await save(".png", (await pngBytes(opts, 2)).data);
       else {
-        const { w, h, text } = svgText();
-        const scale = Math.min(2, Math.sqrt(16_000_000 / (w * h)));
-        const url = URL.createObjectURL(new Blob([text], { type: "image/svg+xml" }));
-        try {
-          const img = new Image();
-          img.src = url;
-          await img.decode();
-          const canvas = document.createElement("canvas");
-          canvas.width = Math.round(w * scale);
-          canvas.height = Math.round(h * scale);
-          canvas.getContext("2d")!.drawImage(img, 0, 0, canvas.width, canvas.height);
-          const blob = await new Promise<Blob>((res, rej) => canvas.toBlob((b) => (b ? res(b) : rej(new Error("無法產生圖片"))), "image/png"));
-          result = await platform.saveFile({ name: `${fileBase}.png`, data: new Uint8Array(await blob.arrayBuffer()) });
-        } finally {
-          URL.revokeObjectURL(url);
-        }
+        // PDF：一頁放整張圖（頁面大小跟著圖），圖用高解析度 PNG（中文字型不用另外嵌入）
+        const [{ PDFDocument }, png] = await Promise.all([import("pdf-lib"), pngBytes(opts, 3)]);
+        const pdf = await PDFDocument.create();
+        pdf.setTitle(map.title || "心智圖");
+        pdf.setCreator("GugaNote 心智圖");
+        const img = await pdf.embedPng(png.data);
+        const pw = png.w * 0.75, ph = png.h * 0.75; // CSS px → pt
+        pdf.addPage([pw, ph]).drawImage(img, { x: 0, y: 0, width: pw, height: ph });
+        result = await save(".pdf", await pdf.save());
       }
       if (result) setToast(result);
     } catch (err) {
       setToast(`匯出失敗：${(err as Error).message}`);
     }
+  };
+
+  /** 匯出選單：圖片格式先開選項視窗，其他直接存 */
+  const chooseExport = (kind: ExportKind) => {
+    if (kind === "png" || kind === "svg" || kind === "pdf") setExportDialog({ kind, transparent: false, selection: false });
+    else void exportAs(kind);
   };
 
   useEffect(() => {
@@ -877,7 +914,7 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
           { kind: "choices", label: "結構", options: STRUCTURES.map((s) => ({ label: s.label, value: s.id })), value: structure, onSelect: (v) => setStructure(v as Structure) },
           { kind: "choices", label: "樣式", options: THEMES.map((t) => ({ label: t.label.slice(0, 1), value: t.id })), value: theme.id, onSelect: setTheme },
           { kind: "separator" },
-          { kind: "action", label: "匯出 PNG 圖片", onSelect: () => void exportAs("png") },
+          { kind: "action", label: "匯出 PNG 圖片…", onSelect: () => chooseExport("png") },
         ],
       };
     }
@@ -997,16 +1034,25 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
               aria-label="匯出"
               value=""
               onChange={(e) => {
-                const v = e.target.value as "png" | "svg" | "md" | "gugamap";
+                const v = e.target.value as ExportKind;
                 e.target.value = "";
-                if (v) void exportAs(v);
+                if (v) chooseExport(v);
               }}
             >
               <option value="">匯出…</option>
-              <option value="png">PNG 圖片</option>
-              <option value="svg">SVG 圖片</option>
-              <option value="md">Markdown 大綱</option>
-              <option value="gugamap">心智圖檔（.gugamap）</option>
+              <optgroup label="圖片">
+                <option value="png">PNG 圖片</option>
+                <option value="svg">SVG 圖片</option>
+                <option value="pdf">PDF</option>
+              </optgroup>
+              <optgroup label="給其他軟體（XMind、MindNode…）">
+                <option value="mm">FreeMind（.mm）</option>
+                <option value="opml">OPML 大綱（.opml）</option>
+                <option value="md">Markdown 大綱</option>
+              </optgroup>
+              <optgroup label="完整備份">
+                <option value="gugamap">心智圖檔（.gugamap）</option>
+              </optgroup>
             </select>
           </label>
         </span>
@@ -1038,7 +1084,7 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
                 <path key={ed.id} d={ed.d} data-edge={ed.id} fill="none" stroke="transparent" strokeWidth={Math.max(12 / view.s, ed.width + 6)} pointerEvents="stroke" style={{ cursor: "pointer" }} />
               ))}
             </g>
-            <g ref={contentRef}>
+            <g>
               <MindMapContent data={data} layout={shown} lifted={drag?.ids} editing={editing?.id} />
             </g>
             {/* 拉線用的圓點：選取一個元件時出現在兩側（不會匯出） */}
@@ -1123,6 +1169,51 @@ export function MindMapEditor({ map, store, createdAt, onBack }: Props) {
 
         {menu && menuData && <ContextMenu x={menu.x} y={menu.y} title={menuData.title} items={menuData.items} onClose={() => setMenu(null)} />}
         {toast && <div className="mm-toast" role="status">{toast}</div>}
+        {exportDialog && (
+          <div className="mm-dialog__backdrop" onPointerDown={(e) => e.stopPropagation()}>
+            <div
+              className="mm-dialog"
+              role="dialog"
+              aria-label={`匯出 ${IMAGE_LABEL[exportDialog.kind]}`}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setExportDialog(null);
+                e.stopPropagation();
+              }}
+            >
+              <h2>匯出 {IMAGE_LABEL[exportDialog.kind]}</h2>
+              <fieldset>
+                <legend>範圍</legend>
+                <label>
+                  <input type="radio" name="mm-export-range" checked={!exportDialog.selection} onChange={() => setExportDialog({ ...exportDialog, selection: false })} />
+                  整張圖
+                </label>
+                <label className={multiIds.length ? undefined : "is-disabled"}>
+                  <input type="radio" name="mm-export-range" disabled={!multiIds.length} checked={exportDialog.selection} onChange={() => setExportDialog({ ...exportDialog, selection: true })} />
+                  只匯出選取的 {multiIds.length} 個元件
+                </label>
+              </fieldset>
+              <label>
+                <input type="checkbox" checked={exportDialog.transparent} onChange={(e) => setExportDialog({ ...exportDialog, transparent: e.target.checked })} />
+                透明背景
+              </label>
+              <div className="mm-dialog__actions">
+                <button type="button" className="mm-btn" onClick={() => setExportDialog(null)}>取消</button>
+                <button
+                  type="button"
+                  className="mm-btn mm-btn--primary"
+                  autoFocus
+                  onClick={() => {
+                    const d = exportDialog;
+                    setExportDialog(null);
+                    void exportAs(d.kind, { transparent: d.transparent, only: d.selection ? multiIds : undefined });
+                  }}
+                >
+                  匯出
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         <p className="mm-hint">左鍵拖背景框選 · 右鍵拖曳移動畫面 · 右鍵點一下開選單 · 點兩下編輯 · 從元件兩側的圓點拉線連接</p>
       </div>
     </div>
@@ -1251,4 +1342,16 @@ function LinkPreview({ layout, link, color, s }: { layout: Layout; link: LinkSta
       {t && <rect x={t.x - 6} y={t.y - 6} width={t.width + 12} height={t.height + 12} rx={10} fill={link.ok ? color : bad} fillOpacity={0.12} stroke={link.ok ? color : bad} strokeWidth={2.5 / s} />}
     </g>
   );
+}
+
+/** 只有某些元件的排版（匯出選取的部分）：兩端都在裡面的線才會畫 */
+function subsetLayout(layout: Layout, ids: Iterable<string>): Layout {
+  const set = new Set(ids);
+  const nodes = layout.nodes.filter((n) => set.has(n.id));
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const n of nodes) {
+    x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y);
+    x1 = Math.max(x1, n.x + n.width); y1 = Math.max(y1, n.y + n.height);
+  }
+  return { structure: layout.structure, nodes, byId: new Map(nodes.map((n) => [n.id, n])), bounds: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } };
 }
